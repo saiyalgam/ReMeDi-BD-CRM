@@ -1,0 +1,1165 @@
+{
+  "id": "rmdCrawler000001",
+  "name": "ReMeDi Opportunity Crawler",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## ReMeDi Opportunity Crawler\nFinds CSR calls, Indian govt tenders, international tenders (partner-led), international grants and Indian innovation grants, scores each one against the ReMeDi profile with Claude, and appends new ones to the Google Sheet.\n\n**Setup**\n1. Set `sheetId` in **Config**.\n2. Attach your Google Sheets credential to the 6 Google Sheets nodes.\n3. Attach a *Header Auth* credential (Name `x-api-key`, Value = your Anthropic API key) to the 3 Claude nodes.\n4. Edit sources in the sheet's **Sources** tab; no workflow change needed.\n5. CRM: set `crmUrl` in **Config** and attach a *Header Auth* credential (Name `Authorization`, Value `Bearer <INGEST_TOKEN>`) to **Read CRM Leads** and **Send to CRM**.",
+        "width": 380,
+        "height": 420,
+        "color": 4
+      },
+      "id": "a1b2c3d4-0000-4000-8000-000000000001",
+      "name": "About",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -420,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "content": "### 1. Load settings, profile, partners, existing rows and the source list",
+        "width": 1300,
+        "height": 360,
+        "color": 7
+      },
+      "id": "a1b2c3d4-0000-4000-8000-000000000002",
+      "name": "Stage 1",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        180,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "content": "### 2. Fetch every source (RSS, APIs, HTML pages, UNGM) and parse",
+        "width": 700,
+        "height": 360,
+        "color": 5
+      },
+      "id": "a1b2c3d4-0000-4000-8000-000000000003",
+      "name": "Stage 2",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1500,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "content": "### 3. Claude reads changed HTML pages, then searches the web for JS-only portals",
+        "width": 1560,
+        "height": 460,
+        "color": 6
+      },
+      "id": "a1b2c3d4-0000-4000-8000-000000000004",
+      "name": "Stage 3",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        2220,
+        60
+      ]
+    },
+    {
+      "parameters": {
+        "content": "### 4. Dedupe, score fit with Claude, write to the sheet and the CRM, log the run",
+        "width": 2560,
+        "height": 460,
+        "color": 3
+      },
+      "id": "a1b2c3d4-0000-4000-8000-000000000005",
+      "name": "Stage 4",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        3800,
+        60
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "30 6 * * *"
+            }
+          ]
+        }
+      },
+      "id": "a1b2c3d4-0000-4000-8000-000000000006",
+      "name": "Daily 6:30 IST",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        260
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "a1b2c3d4-0000-4000-8000-000000000007",
+      "name": "Run now",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        460
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ---------- shared helpers (same block in every Code node) ----------\nconst CATEGORIES = ['CSR - India', 'Govt Tender - India', 'Intl Govt Tender (partner-led)', 'International Grant', 'Innovation Grant - India'];\nconst MONTHS = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, sept: 9, oct: 10, nov: 11, dec: 12,\n  january: 1, february: 2, march: 3, april: 4, june: 6, july: 7, august: 8, september: 9, october: 10, november: 11, december: 12 };\n\nfunction fnv(str) {\n  let h = 0x811c9dc5;\n  const s = String(str || '');\n  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193); }\n  return ('0000000' + (h >>> 0).toString(16)).slice(-8);\n}\n\nfunction decodeEntities(s) {\n  return String(s || '')\n    .replace(/<!\\[CDATA\\[([\\s\\S]*?)\\]\\]>/g, '$1')\n    .replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&').replace(/&lt;/gi, '<').replace(/&gt;/gi, '>')\n    .replace(/&quot;/gi, '\"').replace(/&#0?39;|&apos;|&rsquo;|&lsquo;/gi, \"'\").replace(/&ldquo;|&rdquo;/gi, '\"')\n    .replace(/&ndash;/gi, '-').replace(/&mdash;/gi, '-').replace(/&hellip;/gi, '...')\n    .replace(/&#(\\d+);/g, (m, d) => String.fromCharCode(+d))\n    .replace(/&#x([0-9a-f]+);/gi, (m, h) => String.fromCharCode(parseInt(h, 16)));\n}\n\nfunction clean(s) { return decodeEntities(String(s || '').replace(/<[^>]+>/g, ' ')).replace(/\\s+/g, ' ').trim(); }\n\n// n8n's Code sandbox has no URL global, so URLs are handled with small string helpers.\nfunction parseUrl(u) {\n  const m = String(u || '').trim().match(/^([a-z][a-z0-9+.\\-]*:)\\/\\/([^\\/?#]*)([^?#]*)(\\?[^#]*)?(#.*)?$/i);\n  return m ? { protocol: m[1].toLowerCase(), host: m[2].toLowerCase(), path: m[3] || '/', search: m[4] || '', hash: m[5] || '' } : null;\n}\nfunction normPath(p) {\n  const q = p.search(/[?#]/); const tail = q >= 0 ? p.slice(q) : ''; const path = q >= 0 ? p.slice(0, q) : p;\n  const out = [];\n  for (const seg of path.split('/')) { if (seg === '..') { if (out.length > 1) out.pop(); } else if (seg !== '.') out.push(seg); }\n  let r = out.join('/'); if (!r.startsWith('/')) r = '/' + r;\n  return r + tail;\n}\nfunction absUrl(href, base) {\n  if (!href) return '';\n  href = decodeEntities(href).trim();\n  if (/^(javascript:|mailto:|tel:|#)/i.test(href)) return '';\n  if (/^[a-z][a-z0-9+.\\-]*:/i.test(href)) return href;\n  const b = parseUrl(base); if (!b) return '';\n  if (href.startsWith('//')) return b.protocol + href;\n  const origin = b.protocol + '//' + b.host;\n  if (href.startsWith('/')) return origin + normPath(href);\n  if (href.startsWith('?')) return origin + b.path + href;\n  return origin + normPath(b.path.replace(/[^\\/]*$/, '') + href);\n}\nfunction canonicalUrl(u) {\n  const p = parseUrl(u);\n  if (!p) return String(u || '').toLowerCase().trim();\n  const qs = p.search.replace(/^\\?/, '').split('&').filter(kv => kv && !/^(utm_[a-z]+|fbclid|gclid)=/i.test(kv)).join('&');\n  return (p.host.replace(/^www\\./, '') + p.path.replace(/\\/+$/, '') + (qs ? '?' + qs : '')).toLowerCase();\n}\n\nfunction pad(n) { return String(n).padStart(2, '0'); }\nfunction isoFromParts(y, m, d) {\n  y = +y; m = +m; d = +d;\n  if (y < 100) y += 2000;\n  if (!(y > 1990 && y < 2100 && m >= 1 && m <= 12 && d >= 1 && d <= 31)) return '';\n  return `${y}-${pad(m)}-${pad(d)}`;\n}\n\n// Parse the many date styles these sources use. order: 'dmy' (India/UN default) or 'mdy' (US sources).\nfunction toISODate(input, order) {\n  if (!input) return '';\n  let s = clean(String(input)).replace(/(\\d)(st|nd|rd|th)\\b/gi, '$1');\n  let m;\n  if ((m = s.match(/\\b(\\d{4})-(\\d{1,2})-(\\d{1,2})/))) return isoFromParts(m[1], m[2], m[3]);\n  if ((m = s.match(/\\b(\\d{1,2})[\\/\\-.](\\d{1,2})[\\/\\-.](\\d{2,4})\\b/))) {\n    return order === 'mdy' ? isoFromParts(m[3], m[1], m[2]) : isoFromParts(m[3], m[2], m[1]);\n  }\n  if ((m = s.match(/\\b(\\d{1,2})[\\s\\-.\\/]+([A-Za-z]{3,9})\\.?,?[\\s\\-.\\/]+(\\d{2,4})\\b/))) {\n    const mo = MONTHS[m[2].toLowerCase()];\n    if (mo) return isoFromParts(m[3], mo, m[1]);\n  }\n  if ((m = s.match(/\\b([A-Za-z]{3,9})\\.?\\s+(\\d{1,2}),?\\s+(\\d{4})\\b/))) {\n    const mo = MONTHS[m[1].toLowerCase()];\n    if (mo) return isoFromParts(m[3], mo, m[2]);\n  }\n  const t = Date.parse(s);\n  if (!isNaN(t)) { const d = new Date(t); return isoFromParts(d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate()); }\n  return '';\n}\n\n// Find a deadline mentioned inside free text (\"Deadline: 10 Oct. 2026\", \"Last date of submission 31-10-2026\").\nfunction deadlineFromText(text, order) {\n  const s = clean(text);\n  const re = /(deadline|last date(?: of submission)?|closing date|closes(?: on)?|apply by|due date|submission date|bid end date|last submission date)\\s*(?:is|:|-|–)?\\s*([^|;]{4,40})/gi;\n  let m;\n  while ((m = re.exec(s))) { const d = toISODate(m[2], order); if (d) return d; }\n  return '';\n}\n\nfunction todayISO() {\n  // Asia/Kolkata date\n  const now = new Date(Date.now() + 5.5 * 3600 * 1000);\n  return isoFromParts(now.getUTCFullYear(), now.getUTCMonth() + 1, now.getUTCDate());\n}\n\nfunction matchCount(text, keywords) {\n  const s = ' ' + String(text || '').toLowerCase() + ' ';\n  let n = 0;\n  for (const k of keywords || []) { if (k && s.includes(String(k).toLowerCase())) n++; }\n  return n;\n}\n\nfunction truthy(v) { return v === true || /^(true|yes|y|1|on)$/i.test(String(v == null ? '' : v).trim()); }\n\nfunction makeUid(o) {\n  if (o.ref_no && String(o.ref_no).replace(/\\W/g, '').length >= 6) return 'R' + fnv(String(o.ref_no).toLowerCase().replace(/\\W/g, ''));\n  if (o.url && !o.url_is_listing) return 'U' + fnv(canonicalUrl(o.url));\n  return 'T' + fnv(titleKey(o.title) + '|' + String(o.funder_buyer || '').toLowerCase());\n}\n\nfunction titleKey(t) { return String(t || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().slice(0, 90); }\n\n// Pull the first JSON object/array out of a model reply (handles ```json fences and <json> tags).\nfunction extractJson(text) {\n  if (!text) return null;\n  let t = String(text);\n  const tag = t.match(/<json>([\\s\\S]*?)<\\/json>/i);\n  if (tag) t = tag[1];\n  t = t.replace(/```(?:json)?/gi, '');\n  const starts = [t.indexOf('{'), t.indexOf('[')].filter(i => i >= 0);\n  if (!starts.length) return null;\n  const start = Math.min(...starts);\n  const end = Math.max(t.lastIndexOf('}'), t.lastIndexOf(']'));\n  if (end <= start) return null;\n  try { return JSON.parse(t.slice(start, end + 1)); } catch (e) { return null; }\n}\n\nfunction claudeText(resp) {\n  if (!resp || !Array.isArray(resp.content)) return '';\n  return resp.content.filter(b => b.type === 'text').map(b => b.text).join('');\n}\n\nfunction cut(s, n) { s = String(s || ''); return s.length > n ? s.slice(0, n - 1) + '…' : s; }\n// ---------- end shared helpers ----------\n\n// ===== EDIT THESE SETTINGS =====\nconst config = {\n  // Google Sheet ID: the long id in https://docs.google.com/spreadsheets/d/<THIS_PART>/edit\n  sheetId: 'PASTE_YOUR_GOOGLE_SHEET_ID',\n\n  // Opportunity CRM (Vercel). Leave '' to skip sending leads to the CRM.\n  crmUrl: '',   // e.g. 'https://remedi-crm.vercel.app'\n\n  // Claude models (see https://platform.claude.com/docs/en/models/overview)\n  extractModel: 'claude-haiku-4-5-20251001', // cheap: pulls opportunities out of web pages\n  scoreModel: 'claude-sonnet-5-5',           // scores fit against the ReMeDi profile\n  searchModel: 'claude-sonnet-5-5',          // web-search discovery for JS-only portals (GeM, ADB, ...)\n\n  enableWebSearch: true,   // set false to skip the paid web-search step ($10 per 1,000 searches)\n  webSearchMaxUses: 6,     // searches per category per run\n  maxNewPerRun: 80,        // cap on new opportunities scored per run (cost control)\n  scoreBatchSize: 8,       // opportunities per scoring call\n  maxPageChars: 14000,     // page text sent to Claude per HTML source\n  minDaysToDeadline: 3,    // drop opportunities closing sooner than this\n\n  // A listing line or feed item must mention one of these to be kept (for sources with prefilter = TRUE)\n  keywords: [\n    'telemedicine', 'tele-medicine', 'telehealth', 'tele-health', 'teleconsult', 'tele-consult', 'e-sanjeevani', 'esanjeevani',\n    'hub and spoke', 'kiosk', 'health atm', 'point of care', 'point-of-care', 'poct', 'mobile medical', 'mmu', 'mobile health',\n    'health screening', 'ncd', 'non-communicable', 'health check', 'ayushman arogya', 'arogya mandir', 'health and wellness', 'hwc',\n    'primary health', 'primary care', 'phc', 'digital health', 'ehealth', 'e-health', 'mhealth', 'abdm', 'ecg', 'diagnostic',\n    'medical device', 'medtech', 'medical equipment', 'rural health', 'maternal', 'rmnch', 'anaemia', 'anemia', 'hypertension',\n    'diabetes', 'tele-icu', 'e-icu', 'health information', 'healthcare', 'health care', 'global health'\n  ],\n  // Titles containing these are dropped (civil works at \"telemedicine buildings\" etc.)\n  excludeKeywords: [\n    'civil work', 'construction of', 'building work', 'electrical work', 'air condition', 'painting', 'furniture', 'canteen',\n    'security services', 'housekeeping', 'manpower supply', 'renovation', 'plumbing', 'catering', 'vehicle hire', 'repair of road'\n  ]\n};\n// ===== END SETTINGS =====\n\nconfig.today = todayISO();\nconfig.runId = 'run-' + new Date().toISOString().replace(/[:.]/g, '-');\nreturn [{ json: config }];\n"
+      },
+      "id": "a1b2c3d4-0000-4000-8000-000000000008",
+      "name": "Config",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $('Config').first().json.sheetId }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Profile",
+          "mode": "name"
+        },
+        "options": {}
+      },
+      "id": "a1b2c3d4-0000-4000-8000-000000000009",
+      "name": "Read Profile",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        440,
+        360
+      ],
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_GOOGLE_SHEETS_CRED",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $('Config').first().json.sheetId }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Partners",
+          "mode": "name"
+        },
+        "options": {}
+      },
+      "id": "a1b2c3d4-0000-4000-8000-000000000010",
+      "name": "Read Partners",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        660,
+        360
+      ],
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_GOOGLE_SHEETS_CRED",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $('Config').first().json.sheetId }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Opportunities",
+          "mode": "name"
+        },
+        "options": {}
+      },
+      "id": "a1b2c3d4-0000-4000-8000-000000000011",
+      "name": "Read Existing",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        880,
+        360
+      ],
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_GOOGLE_SHEETS_CRED",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $('Config').first().json.sheetId }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Sources",
+          "mode": "name"
+        },
+        "options": {}
+      },
+      "id": "a1b2c3d4-0000-4000-8000-000000000012",
+      "name": "Read Sources",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1100,
+        360
+      ],
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_GOOGLE_SHEETS_CRED",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "={{ ($('Config').first().json.crmUrl || 'http://crm-not-set.invalid').replace(/\\/$/, '') }}/api/ingest",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "a1b2c3d4-0000-4000-8000-000000000013",
+      "name": "Read CRM Leads",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        990,
+        580
+      ],
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_CRM_CRED",
+          "name": "CRM ingest token"
+        }
+      },
+      "notes": "Asks the CRM which leads it already has, so they are not scored twice. Fails harmlessly when crmUrl is empty."
+    },
+    {
+      "parameters": {
+        "jsCode": "// ---------- shared helpers (same block in every Code node) ----------\nconst CATEGORIES = ['CSR - India', 'Govt Tender - India', 'Intl Govt Tender (partner-led)', 'International Grant', 'Innovation Grant - India'];\nconst MONTHS = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, sept: 9, oct: 10, nov: 11, dec: 12,\n  january: 1, february: 2, march: 3, april: 4, june: 6, july: 7, august: 8, september: 9, october: 10, november: 11, december: 12 };\n\nfunction fnv(str) {\n  let h = 0x811c9dc5;\n  const s = String(str || '');\n  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193); }\n  return ('0000000' + (h >>> 0).toString(16)).slice(-8);\n}\n\nfunction decodeEntities(s) {\n  return String(s || '')\n    .replace(/<!\\[CDATA\\[([\\s\\S]*?)\\]\\]>/g, '$1')\n    .replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&').replace(/&lt;/gi, '<').replace(/&gt;/gi, '>')\n    .replace(/&quot;/gi, '\"').replace(/&#0?39;|&apos;|&rsquo;|&lsquo;/gi, \"'\").replace(/&ldquo;|&rdquo;/gi, '\"')\n    .replace(/&ndash;/gi, '-').replace(/&mdash;/gi, '-').replace(/&hellip;/gi, '...')\n    .replace(/&#(\\d+);/g, (m, d) => String.fromCharCode(+d))\n    .replace(/&#x([0-9a-f]+);/gi, (m, h) => String.fromCharCode(parseInt(h, 16)));\n}\n\nfunction clean(s) { return decodeEntities(String(s || '').replace(/<[^>]+>/g, ' ')).replace(/\\s+/g, ' ').trim(); }\n\n// n8n's Code sandbox has no URL global, so URLs are handled with small string helpers.\nfunction parseUrl(u) {\n  const m = String(u || '').trim().match(/^([a-z][a-z0-9+.\\-]*:)\\/\\/([^\\/?#]*)([^?#]*)(\\?[^#]*)?(#.*)?$/i);\n  return m ? { protocol: m[1].toLowerCase(), host: m[2].toLowerCase(), path: m[3] || '/', search: m[4] || '', hash: m[5] || '' } : null;\n}\nfunction normPath(p) {\n  const q = p.search(/[?#]/); const tail = q >= 0 ? p.slice(q) : ''; const path = q >= 0 ? p.slice(0, q) : p;\n  const out = [];\n  for (const seg of path.split('/')) { if (seg === '..') { if (out.length > 1) out.pop(); } else if (seg !== '.') out.push(seg); }\n  let r = out.join('/'); if (!r.startsWith('/')) r = '/' + r;\n  return r + tail;\n}\nfunction absUrl(href, base) {\n  if (!href) return '';\n  href = decodeEntities(href).trim();\n  if (/^(javascript:|mailto:|tel:|#)/i.test(href)) return '';\n  if (/^[a-z][a-z0-9+.\\-]*:/i.test(href)) return href;\n  const b = parseUrl(base); if (!b) return '';\n  if (href.startsWith('//')) return b.protocol + href;\n  const origin = b.protocol + '//' + b.host;\n  if (href.startsWith('/')) return origin + normPath(href);\n  if (href.startsWith('?')) return origin + b.path + href;\n  return origin + normPath(b.path.replace(/[^\\/]*$/, '') + href);\n}\nfunction canonicalUrl(u) {\n  const p = parseUrl(u);\n  if (!p) return String(u || '').toLowerCase().trim();\n  const qs = p.search.replace(/^\\?/, '').split('&').filter(kv => kv && !/^(utm_[a-z]+|fbclid|gclid)=/i.test(kv)).join('&');\n  return (p.host.replace(/^www\\./, '') + p.path.replace(/\\/+$/, '') + (qs ? '?' + qs : '')).toLowerCase();\n}\n\nfunction pad(n) { return String(n).padStart(2, '0'); }\nfunction isoFromParts(y, m, d) {\n  y = +y; m = +m; d = +d;\n  if (y < 100) y += 2000;\n  if (!(y > 1990 && y < 2100 && m >= 1 && m <= 12 && d >= 1 && d <= 31)) return '';\n  return `${y}-${pad(m)}-${pad(d)}`;\n}\n\n// Parse the many date styles these sources use. order: 'dmy' (India/UN default) or 'mdy' (US sources).\nfunction toISODate(input, order) {\n  if (!input) return '';\n  let s = clean(String(input)).replace(/(\\d)(st|nd|rd|th)\\b/gi, '$1');\n  let m;\n  if ((m = s.match(/\\b(\\d{4})-(\\d{1,2})-(\\d{1,2})/))) return isoFromParts(m[1], m[2], m[3]);\n  if ((m = s.match(/\\b(\\d{1,2})[\\/\\-.](\\d{1,2})[\\/\\-.](\\d{2,4})\\b/))) {\n    return order === 'mdy' ? isoFromParts(m[3], m[1], m[2]) : isoFromParts(m[3], m[2], m[1]);\n  }\n  if ((m = s.match(/\\b(\\d{1,2})[\\s\\-.\\/]+([A-Za-z]{3,9})\\.?,?[\\s\\-.\\/]+(\\d{2,4})\\b/))) {\n    const mo = MONTHS[m[2].toLowerCase()];\n    if (mo) return isoFromParts(m[3], mo, m[1]);\n  }\n  if ((m = s.match(/\\b([A-Za-z]{3,9})\\.?\\s+(\\d{1,2}),?\\s+(\\d{4})\\b/))) {\n    const mo = MONTHS[m[1].toLowerCase()];\n    if (mo) return isoFromParts(m[3], mo, m[2]);\n  }\n  const t = Date.parse(s);\n  if (!isNaN(t)) { const d = new Date(t); return isoFromParts(d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate()); }\n  return '';\n}\n\n// Find a deadline mentioned inside free text (\"Deadline: 10 Oct. 2026\", \"Last date of submission 31-10-2026\").\nfunction deadlineFromText(text, order) {\n  const s = clean(text);\n  const re = /(deadline|last date(?: of submission)?|closing date|closes(?: on)?|apply by|due date|submission date|bid end date|last submission date)\\s*(?:is|:|-|–)?\\s*([^|;]{4,40})/gi;\n  let m;\n  while ((m = re.exec(s))) { const d = toISODate(m[2], order); if (d) return d; }\n  return '';\n}\n\nfunction todayISO() {\n  // Asia/Kolkata date\n  const now = new Date(Date.now() + 5.5 * 3600 * 1000);\n  return isoFromParts(now.getUTCFullYear(), now.getUTCMonth() + 1, now.getUTCDate());\n}\n\nfunction matchCount(text, keywords) {\n  const s = ' ' + String(text || '').toLowerCase() + ' ';\n  let n = 0;\n  for (const k of keywords || []) { if (k && s.includes(String(k).toLowerCase())) n++; }\n  return n;\n}\n\nfunction truthy(v) { return v === true || /^(true|yes|y|1|on)$/i.test(String(v == null ? '' : v).trim()); }\n\nfunction makeUid(o) {\n  if (o.ref_no && String(o.ref_no).replace(/\\W/g, '').length >= 6) return 'R' + fnv(String(o.ref_no).toLowerCase().replace(/\\W/g, ''));\n  if (o.url && !o.url_is_listing) return 'U' + fnv(canonicalUrl(o.url));\n  return 'T' + fnv(titleKey(o.title) + '|' + String(o.funder_buyer || '').toLowerCase());\n}\n\nfunction titleKey(t) { return String(t || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().slice(0, 90); }\n\n// Pull the first JSON object/array out of a model reply (handles ```json fences and <json> tags).\nfunction extractJson(text) {\n  if (!text) return null;\n  let t = String(text);\n  const tag = t.match(/<json>([\\s\\S]*?)<\\/json>/i);\n  if (tag) t = tag[1];\n  t = t.replace(/```(?:json)?/gi, '');\n  const starts = [t.indexOf('{'), t.indexOf('[')].filter(i => i >= 0);\n  if (!starts.length) return null;\n  const start = Math.min(...starts);\n  const end = Math.max(t.lastIndexOf('}'), t.lastIndexOf(']'));\n  if (end <= start) return null;\n  try { return JSON.parse(t.slice(start, end + 1)); } catch (e) { return null; }\n}\n\nfunction claudeText(resp) {\n  if (!resp || !Array.isArray(resp.content)) return '';\n  return resp.content.filter(b => b.type === 'text').map(b => b.text).join('');\n}\n\nfunction cut(s, n) { s = String(s || ''); return s.length > n ? s.slice(0, n - 1) + '…' : s; }\n// ---------- end shared helpers ----------\n\n// Fetches every active source row (except web-search rows). One host at a time per queue, a few hosts in parallel.\nconst cfg = $('Config').first().json;\nconst UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0 Safari/537.36 ReMeDiOpportunityBot/1.0';\nconst BASE_HEADERS = { 'User-Agent': UA, 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.8,*/*;q=0.7', 'Accept-Language': 'en-IN,en;q=0.9', 'Cache-Control': 'no-cache' };\nconst HOSTS_IN_PARALLEL = 6, GAP_MS = 1500, TIMEOUT_MS = 25000, BUDGET_MS = 230000, MAX_CHARS = 600000;\nconst started = Date.now();\nconst sleep = ms => new Promise(r => setTimeout(r, ms));\nconst http = this.helpers.httpRequest.bind(this.helpers);\n\nfunction ddMonYYYY(iso) { const [y, m, d] = iso.split('-'); return `${d}-${['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][+m - 1]}-${y}`; }\nconst asText = b => (b == null ? '' : typeof b === 'string' ? b : (b.type === 'Buffer' && Array.isArray(b.data)) ? Buffer.from(b.data).toString('utf8') : JSON.stringify(b));\n\n// UNGM needs a session cookie and an anti-forgery token, fetched once per run.\nlet ungm = null;\nasync function ungmSession(origin) {\n  if (ungm) return ungm;\n  const r = await http({ method: 'GET', url: origin + '/Public/Notice', headers: BASE_HEADERS, returnFullResponse: true, timeout: TIMEOUT_MS, encoding: 'text', json: false });\n  const html = asText(r.body);\n  const m = html.match(/name=\"__RequestVerificationToken\"[^>]*value=\"([^\"]+)\"/) || html.match(/value=\"([^\"]+)\"[^>]*name=\"__RequestVerificationToken\"/);\n  let sc = (r.headers || {})['set-cookie'] || [];\n  if (!Array.isArray(sc)) sc = [sc];\n  ungm = { token: m ? m[1] : '', cookie: sc.map(c => String(c).split(';')[0]).join('; ') };\n  if (!ungm.token) throw new Error('UNGM token not found');\n  return ungm;\n}\n\nasync function fetchOne(src) {\n  const req = { method: src.method, url: src.url, headers: Object.assign({}, BASE_HEADERS), timeout: TIMEOUT_MS, json: false, encoding: 'text', returnFullResponse: true };\n  if (src.parser === 'ungm') {\n    const pu = parseUrl(src.url); const origin = pu.protocol + '//' + pu.host;\n    const s = await ungmSession(origin);\n    let extra = {}; try { extra = src.body ? JSON.parse(src.body) : {}; } catch (e) {}\n    req.method = 'POST';\n    req.body = JSON.stringify(Object.assign({\n      PageIndex: 0, PageSize: 15, Title: '', Description: '', Reference: '', PublishedFrom: '', PublishedTo: '',\n      DeadlineFrom: ddMonYYYY(cfg.today), DeadlineTo: '', Countries: [], Agencies: [], UNSPSCs: [], NoticeTypes: [],\n      SortField: 'Deadline', SortAscending: true, isPicker: false, IsSustainable: false, IsActive: true,\n      NoticeDisplayType: null, NoticeSearchTotalLabelId: 'noticeSearchTotal', TypeOfCompetitions: []\n    }, extra));\n    Object.assign(req.headers, { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest', 'RequestVerificationToken': s.token, 'Cookie': s.cookie, 'Accept': 'text/html, */*' });\n  } else if (src.parser === 'sedia') {\n    // EU Funding & Tenders search API: multipart/form-data whose parts are JSON \"files\".\n    const boundary = '----remedi' + fnv(src.url + Date.now());\n    const parts = [['query', src.body || '{\"bool\":{\"must\":[{\"terms\":{\"type\":[\"1\",\"2\",\"8\"]}},{\"terms\":{\"status\":[\"31094501\",\"31094502\"]}}]}}'], ['languages', '[\"en\"]'], ['sort', '{\"field\":\"sortStatus\",\"order\":\"ASC\"}']];\n    req.method = 'POST';\n    req.body = parts.map(([n, v]) => `--${boundary}\\r\\nContent-Disposition: form-data; name=\"${n}\"; filename=\"blob\"\\r\\nContent-Type: application/json\\r\\n\\r\\n${v}\\r\\n`).join('') + `--${boundary}--\\r\\n`; // a string, so n8n sends it untouched\n    Object.assign(req.headers, { 'Content-Type': `multipart/form-data; boundary=${boundary}`, 'Accept': 'application/json' });\n  } else if (src.method === 'POST') {\n    req.body = src.body || '{}';\n    Object.assign(req.headers, { 'Content-Type': 'application/json', 'Accept': 'application/json' });\n  }\n  const r = await http(req);\n  return { status: r.statusCode, data: asText(r.body).slice(0, MAX_CHARS) };\n}\n\n// Active rows, grouped by host so each site sees one request at a time.\nconst sources = $('Read Sources').all().map(i => i.json)\n  .filter(r => truthy(r.active) && r.url && String(r.parser || 'html').toLowerCase() !== 'websearch')\n  .map(r => ({ name: r.name || r.url, category: r.category || '', parser: String(r.parser || 'html').trim().toLowerCase(), method: String(r.method || 'GET').toUpperCase(),\n    url: String(r.url).trim(), body: r.body || '', prefilter: truthy(r.prefilter) }));\nconst byHost = {};\nfor (const s of sources) { const h = (parseUrl(s.url) || { host: 'x' }).host; (byHost[h] = byHost[h] || []).push(s); }\nconst queues = Object.values(byHost);\nconst results = [];\n\nasync function worker() {\n  while (queues.length) {\n    const q = queues.shift();\n    for (let k = 0; k < q.length; k++) {\n      const src = q[k];\n      if (Date.now() - started > BUDGET_MS) { results.push({ src, error: 'skipped: run time budget used up' }); continue; }\n      try { results.push(Object.assign({ src }, await fetchOne(src))); }\n      catch (e) {\n        const code = e.httpCode || (e.response && e.response.status) || '';\n        results.push({ src, error: cut(`${code ? code + ' ' : ''}${e.message || e}`, 200) });\n      }\n      if (k < q.length - 1) await sleep(src.parser === 'ungm' ? 3000 : GAP_MS);\n    }\n  }\n}\nawait Promise.all(Array.from({ length: Math.min(HOSTS_IN_PARALLEL, queues.length) }, worker));\nif (!results.length) return [{ json: { src: { name: 'none', parser: 'none' }, error: 'no active sources' } }];\nreturn results.map(r => ({ json: r }));\n"
+      },
+      "id": "a1b2c3d4-0000-4000-8000-000000000014",
+      "name": "Fetch Sources",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1540,
+        360
+      ],
+      "notes": "Fetches RSS feeds, JSON APIs, HTML pages and UNGM searches listed in the Sources tab."
+    },
+    {
+      "parameters": {
+        "jsCode": "// ---------- shared helpers (same block in every Code node) ----------\nconst CATEGORIES = ['CSR - India', 'Govt Tender - India', 'Intl Govt Tender (partner-led)', 'International Grant', 'Innovation Grant - India'];\nconst MONTHS = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, sept: 9, oct: 10, nov: 11, dec: 12,\n  january: 1, february: 2, march: 3, april: 4, june: 6, july: 7, august: 8, september: 9, october: 10, november: 11, december: 12 };\n\nfunction fnv(str) {\n  let h = 0x811c9dc5;\n  const s = String(str || '');\n  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193); }\n  return ('0000000' + (h >>> 0).toString(16)).slice(-8);\n}\n\nfunction decodeEntities(s) {\n  return String(s || '')\n    .replace(/<!\\[CDATA\\[([\\s\\S]*?)\\]\\]>/g, '$1')\n    .replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&').replace(/&lt;/gi, '<').replace(/&gt;/gi, '>')\n    .replace(/&quot;/gi, '\"').replace(/&#0?39;|&apos;|&rsquo;|&lsquo;/gi, \"'\").replace(/&ldquo;|&rdquo;/gi, '\"')\n    .replace(/&ndash;/gi, '-').replace(/&mdash;/gi, '-').replace(/&hellip;/gi, '...')\n    .replace(/&#(\\d+);/g, (m, d) => String.fromCharCode(+d))\n    .replace(/&#x([0-9a-f]+);/gi, (m, h) => String.fromCharCode(parseInt(h, 16)));\n}\n\nfunction clean(s) { return decodeEntities(String(s || '').replace(/<[^>]+>/g, ' ')).replace(/\\s+/g, ' ').trim(); }\n\n// n8n's Code sandbox has no URL global, so URLs are handled with small string helpers.\nfunction parseUrl(u) {\n  const m = String(u || '').trim().match(/^([a-z][a-z0-9+.\\-]*:)\\/\\/([^\\/?#]*)([^?#]*)(\\?[^#]*)?(#.*)?$/i);\n  return m ? { protocol: m[1].toLowerCase(), host: m[2].toLowerCase(), path: m[3] || '/', search: m[4] || '', hash: m[5] || '' } : null;\n}\nfunction normPath(p) {\n  const q = p.search(/[?#]/); const tail = q >= 0 ? p.slice(q) : ''; const path = q >= 0 ? p.slice(0, q) : p;\n  const out = [];\n  for (const seg of path.split('/')) { if (seg === '..') { if (out.length > 1) out.pop(); } else if (seg !== '.') out.push(seg); }\n  let r = out.join('/'); if (!r.startsWith('/')) r = '/' + r;\n  return r + tail;\n}\nfunction absUrl(href, base) {\n  if (!href) return '';\n  href = decodeEntities(href).trim();\n  if (/^(javascript:|mailto:|tel:|#)/i.test(href)) return '';\n  if (/^[a-z][a-z0-9+.\\-]*:/i.test(href)) return href;\n  const b = parseUrl(base); if (!b) return '';\n  if (href.startsWith('//')) return b.protocol + href;\n  const origin = b.protocol + '//' + b.host;\n  if (href.startsWith('/')) return origin + normPath(href);\n  if (href.startsWith('?')) return origin + b.path + href;\n  return origin + normPath(b.path.replace(/[^\\/]*$/, '') + href);\n}\nfunction canonicalUrl(u) {\n  const p = parseUrl(u);\n  if (!p) return String(u || '').toLowerCase().trim();\n  const qs = p.search.replace(/^\\?/, '').split('&').filter(kv => kv && !/^(utm_[a-z]+|fbclid|gclid)=/i.test(kv)).join('&');\n  return (p.host.replace(/^www\\./, '') + p.path.replace(/\\/+$/, '') + (qs ? '?' + qs : '')).toLowerCase();\n}\n\nfunction pad(n) { return String(n).padStart(2, '0'); }\nfunction isoFromParts(y, m, d) {\n  y = +y; m = +m; d = +d;\n  if (y < 100) y += 2000;\n  if (!(y > 1990 && y < 2100 && m >= 1 && m <= 12 && d >= 1 && d <= 31)) return '';\n  return `${y}-${pad(m)}-${pad(d)}`;\n}\n\n// Parse the many date styles these sources use. order: 'dmy' (India/UN default) or 'mdy' (US sources).\nfunction toISODate(input, order) {\n  if (!input) return '';\n  let s = clean(String(input)).replace(/(\\d)(st|nd|rd|th)\\b/gi, '$1');\n  let m;\n  if ((m = s.match(/\\b(\\d{4})-(\\d{1,2})-(\\d{1,2})/))) return isoFromParts(m[1], m[2], m[3]);\n  if ((m = s.match(/\\b(\\d{1,2})[\\/\\-.](\\d{1,2})[\\/\\-.](\\d{2,4})\\b/))) {\n    return order === 'mdy' ? isoFromParts(m[3], m[1], m[2]) : isoFromParts(m[3], m[2], m[1]);\n  }\n  if ((m = s.match(/\\b(\\d{1,2})[\\s\\-.\\/]+([A-Za-z]{3,9})\\.?,?[\\s\\-.\\/]+(\\d{2,4})\\b/))) {\n    const mo = MONTHS[m[2].toLowerCase()];\n    if (mo) return isoFromParts(m[3], mo, m[1]);\n  }\n  if ((m = s.match(/\\b([A-Za-z]{3,9})\\.?\\s+(\\d{1,2}),?\\s+(\\d{4})\\b/))) {\n    const mo = MONTHS[m[1].toLowerCase()];\n    if (mo) return isoFromParts(m[3], mo, m[2]);\n  }\n  const t = Date.parse(s);\n  if (!isNaN(t)) { const d = new Date(t); return isoFromParts(d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate()); }\n  return '';\n}\n\n// Find a deadline mentioned inside free text (\"Deadline: 10 Oct. 2026\", \"Last date of submission 31-10-2026\").\nfunction deadlineFromText(text, order) {\n  const s = clean(text);\n  const re = /(deadline|last date(?: of submission)?|closing date|closes(?: on)?|apply by|due date|submission date|bid end date|last submission date)\\s*(?:is|:|-|–)?\\s*([^|;]{4,40})/gi;\n  let m;\n  while ((m = re.exec(s))) { const d = toISODate(m[2], order); if (d) return d; }\n  return '';\n}\n\nfunction todayISO() {\n  // Asia/Kolkata date\n  const now = new Date(Date.now() + 5.5 * 3600 * 1000);\n  return isoFromParts(now.getUTCFullYear(), now.getUTCMonth() + 1, now.getUTCDate());\n}\n\nfunction matchCount(text, keywords) {\n  const s = ' ' + String(text || '').toLowerCase() + ' ';\n  let n = 0;\n  for (const k of keywords || []) { if (k && s.includes(String(k).toLowerCase())) n++; }\n  return n;\n}\n\nfunction truthy(v) { return v === true || /^(true|yes|y|1|on)$/i.test(String(v == null ? '' : v).trim()); }\n\nfunction makeUid(o) {\n  if (o.ref_no && String(o.ref_no).replace(/\\W/g, '').length >= 6) return 'R' + fnv(String(o.ref_no).toLowerCase().replace(/\\W/g, ''));\n  if (o.url && !o.url_is_listing) return 'U' + fnv(canonicalUrl(o.url));\n  return 'T' + fnv(titleKey(o.title) + '|' + String(o.funder_buyer || '').toLowerCase());\n}\n\nfunction titleKey(t) { return String(t || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().slice(0, 90); }\n\n// Pull the first JSON object/array out of a model reply (handles ```json fences and <json> tags).\nfunction extractJson(text) {\n  if (!text) return null;\n  let t = String(text);\n  const tag = t.match(/<json>([\\s\\S]*?)<\\/json>/i);\n  if (tag) t = tag[1];\n  t = t.replace(/```(?:json)?/gi, '');\n  const starts = [t.indexOf('{'), t.indexOf('[')].filter(i => i >= 0);\n  if (!starts.length) return null;\n  const start = Math.min(...starts);\n  const end = Math.max(t.lastIndexOf('}'), t.lastIndexOf(']'));\n  if (end <= start) return null;\n  try { return JSON.parse(t.slice(start, end + 1)); } catch (e) { return null; }\n}\n\nfunction claudeText(resp) {\n  if (!resp || !Array.isArray(resp.content)) return '';\n  return resp.content.filter(b => b.type === 'text').map(b => b.text).join('');\n}\n\nfunction cut(s, n) { s = String(s || ''); return s.length > n ? s.slice(0, n - 1) + '…' : s; }\n// ---------- end shared helpers ----------\n\n// Turns each fetched response into opportunities (structured sources) or page text for Claude (HTML sources).\nconst cfg = $('Config').first().json;\nconst today = cfg.today;\nconst kw = cfg.keywords || [];\nconst store = $getWorkflowStaticData('global');\nstore.pageHashes = store.pageHashes || {};\nconst out = [];\n\nfunction opp(src, o) {\n  const title = clean(o.title);\n  if (!title) return;\n  const text = `${title} ${o.summary || ''}`;\n  if (src.prefilter && matchCount(text, kw) === 0) return;\n  out.push({ json: Object.assign({\n    kind: 'opp', category: src.category, source: src.name, funder_buyer: '', country: '', deadline: '', amount: '',\n    url: '', ref_no: '', summary: '', published: ''\n  }, o, { title, summary: cut(clean(o.summary), 700) }) });\n}\n\n// HTML -> readable lines; links kept as \"text [url]\" so Claude can return the right link per item.\nfunction htmlToLines(html, base) {\n  let s = String(html || '');\n  s = s.replace(/<(script|style|noscript|svg|head|iframe)[\\s\\S]*?<\\/\\1>/gi, ' ').replace(/<!--[\\s\\S]*?-->/g, ' ');\n  s = s.replace(/<a\\b[^>]*href\\s*=\\s*[\"']([^\"']+)[\"'][^>]*>([\\s\\S]*?)<\\/a>/gi, (m, href, txt) => {\n    const u = absUrl(href, base); const t = clean(txt);\n    return t ? (u ? ` ${t} [${u}] ` : ` ${t} `) : '';\n  });\n  s = s.replace(/<\\/(td|th)>/gi, ' | ').replace(/<(br|\\/p|\\/div|\\/li|\\/tr|\\/h[1-6]|\\/dt|\\/dd|\\/article|\\/section)\\b[^>]*>/gi, '\\n');\n  s = decodeEntities(s.replace(/<[^>]+>/g, ' '));\n  return s.split('\\n').map(l => l.replace(/[ \\t]+/g, ' ').replace(/(\\s*\\|\\s*)+$/, '').trim()).filter(l => l.length > 2);\n}\n\nfunction keepRelevant(lines) {\n  const keep = new Set();\n  lines.forEach((l, i) => { if (matchCount(l, kw) > 0) { keep.add(i - 1); keep.add(i); keep.add(i + 1); keep.add(i + 2); } });\n  return lines.filter((l, i) => keep.has(i));\n}\n\nconst items = $input.all();\nfor (let i = 0; i < items.length; i++) {\n  const res = items[i].json || {};\n  const src = res.src || { name: 'unknown', parser: 'none' };\n  if (src.parser === 'none') continue;\n  if (res.error) { out.push({ json: { kind: 'error', source: src.name, error: String(res.error) } }); continue; }\n  const raw = String(res.data || '');\n  let data = null;\n  const asJson = () => { if (data === null) { try { data = JSON.parse(raw); } catch (e) { data = {}; } } return data; };\n  const before = out.length;\n  try {\n    switch (src.parser) {\n      case 'rss': {\n        const blocks = raw.match(/<item\\b[\\s\\S]*?<\\/item>|<entry\\b[\\s\\S]*?<\\/entry>/gi) || [];\n        for (const b of blocks.slice(0, 60)) {\n          const get = (tag) => { const m = b.match(new RegExp(`<${tag}\\\\b[^>]*>([\\\\s\\\\S]*?)<\\\\/${tag}>`, 'i')); return m ? decodeEntities(m[1]).trim() : ''; };\n          let link = get('link'); if (!link) { const m = b.match(/<link[^>]*href=[\"']([^\"']+)[\"']/i); link = m ? m[1] : ''; }\n          const desc = get('content:encoded') || get('description') || get('summary') || get('content');\n          const pub = get('pubDate') || get('published') || get('updated') || get('dc:date');\n          opp(src, { title: get('title'), url: link.trim(), summary: desc, published: toISODate(pub), deadline: deadlineFromText(desc) });\n        }\n        break;\n      }\n      case 'grantsgov': {\n        for (const h of (asJson().data && asJson().data.oppHits) || []) {\n          opp(src, { title: h.title, funder_buyer: h.agency || h.agencyCode, country: 'Global / US-funded', deadline: toISODate(h.closeDate, 'mdy'),\n            ref_no: h.number, url: `https://www.grants.gov/search-results-detail/${h.id}`, published: toISODate(h.openDate, 'mdy'),\n            summary: `Status: ${h.oppStatus || ''}. ${h.docType === 'forecast' ? 'Forecast (not yet open). ' : ''}CFDA: ${(h.cfdaList || []).join(', ')}` });\n        }\n        break;\n      }\n      case 'worldbank': {\n        const j = asJson();\n        let rows = j.procnotices || j.documents || [];\n        if (!Array.isArray(rows)) rows = Object.values(rows);\n        for (const r of rows) {\n          if (!r || typeof r !== 'object') continue;\n          const type = String(r.notice_type || '');\n          if (/award/i.test(type)) continue;\n          const dl = toISODate(r.submission_deadline_date);\n          if (!dl) continue;\n          opp(src, { title: r.bid_description || r.project_name, funder_buyer: `World Bank project: ${r.project_name || r.project_id || ''}`,\n            country: r.project_ctry_name || '', deadline: dl, ref_no: r.bid_reference_no || r.id,\n            url: `https://projects.worldbank.org/en/projects-operations/procurement-detail/${r.id}`, published: toISODate(r.noticedate),\n            summary: `${type}. ${r.procurement_group || ''} ${clean(r.notice_text).slice(0, 500)}` });\n        }\n        break;\n      }\n      case 'ted': {\n        const pick = (v) => { if (!v) return ''; if (Array.isArray(v)) return pick(v[0]); if (typeof v === 'object') return pick(v.eng || v.ENG || Object.values(v)[0]); return String(v); };\n        for (const n of asJson().notices || []) {\n          const pn = n['publication-number'];\n          opp(src, { title: pick(n['notice-title']), funder_buyer: pick(n['buyer-name']), country: [].concat(n['buyer-country'] || []).join(', '),\n            deadline: toISODate(pick(n['deadline-receipt-tender-date-lot'])), ref_no: pn, published: toISODate(pick(n['publication-date'])),\n            url: `https://ted.europa.eu/en/notice/-/detail/${pn}`, summary: `EU TED notice ${pick(n['notice-type'])}` });\n        }\n        break;\n      }\n      case 'sedia': {\n        const seen = new Set();\n        for (const r of asJson().results || []) {\n          const md = r.metadata || {};\n          const id = (md.identifier || [])[0] || (md.callIdentifier || [])[0];\n          if (!id || seen.has(id)) continue; seen.add(id);\n          const dls = (md.deadlineDate || []).map(d => toISODate(d)).filter(d => d && d >= today).sort();\n          const status = (md.status || [])[0];\n          if (!dls.length) continue;\n          opp(src, { title: (md.title || [])[0] || r.summary || id, funder_buyer: 'European Commission (Funding & Tenders portal)', country: 'EU consortium',\n            deadline: dls[0], ref_no: id, summary: `${status === '31094501' ? 'Forthcoming' : 'Open'} call. ${clean(r.summary || r.content || '').slice(0, 400)}`,\n            url: `https://ec.europa.eu/info/funding-tenders/opportunities/portal/screen/opportunities/topic-details/${id}` });\n        }\n        break;\n      }\n      case 'wpjson': {\n        const arr = Array.isArray(asJson()) ? asJson() : [];\n        for (const p of arr) {\n          const t = p.title && (p.title.rendered || p.title);\n          const ex = (p.excerpt && p.excerpt.rendered) || (p.content && p.content.rendered) || '';\n          opp(src, { title: t, url: p.link, published: toISODate(p.modified || p.date), summary: ex, deadline: deadlineFromText(ex) });\n        }\n        break;\n      }\n      case 'ungm': {\n        const rows = raw.split(/data-noticeid=\"/).slice(1);\n        const fallback = [];\n        for (const chunk of rows) {\n          const id = chunk.match(/^(\\d+)/);\n          const cells = chunk.split(/class=\"[^\"]*\\btableCell\\b[^\"]*\"/).slice(1).map(c => clean(('<x ' + c).replace(/<[^>]*$/, '')));\n          const url = id ? `https://www.ungm.org/Public/Notice/${id[1]}` : '';\n          // Cell order: [save], title, deadline, published, agency, notice type, reference, beneficiary country\n          const d = cells.findIndex((c, k) => k > 0 && toISODate(c));\n          if (d >= 1 && cells.length >= d + 5) {\n            opp(src, { title: cells[d - 1], deadline: toISODate(cells[d]), published: toISODate(cells[d + 1]), funder_buyer: ('UN ' + (cells[d + 2] || '')).trim(),\n              summary: cells[d + 3] || '', ref_no: cells[d + 4] || '', country: cells[d + 5] || '', url });\n          } else { fallback.push(clean('<x ' + chunk) + ' [' + url + ']'); }\n        }\n        if (fallback.length) out.push({ json: { kind: 'page', source: src.name, category: src.category, url: src.url, text: cut(fallback.join('\\n'), cfg.maxPageChars), hashKey: '', hash: '' } });\n        break;\n      }\n      default: { // 'html' – let Claude read the page\n        let lines = htmlToLines(raw, src.url);\n        if (src.prefilter) lines = keepRelevant(lines);\n        const text = cut(lines.join('\\n'), cfg.maxPageChars);\n        if (text.length < 40) break;\n        const hash = fnv(text);\n        if (store.pageHashes[src.name] === hash) { out.push({ json: { kind: 'unchanged', source: src.name } }); break; }\n        out.push({ json: { kind: 'page', source: src.name, category: src.category, url: src.url, text, hashKey: src.name, hash } });\n      }\n    }\n  } catch (e) {\n    out.push({ json: { kind: 'error', source: src.name, error: 'parse: ' + cut(e.message, 180) } });\n  }\n  if (out.length === before) out.push({ json: { kind: 'empty', source: src.name } });\n}\nreturn out;\n"
+      },
+      "id": "a1b2c3d4-0000-4000-8000-000000000015",
+      "name": "Parse Sources",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1760,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ---------- shared helpers (same block in every Code node) ----------\nconst CATEGORIES = ['CSR - India', 'Govt Tender - India', 'Intl Govt Tender (partner-led)', 'International Grant', 'Innovation Grant - India'];\nconst MONTHS = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, sept: 9, oct: 10, nov: 11, dec: 12,\n  january: 1, february: 2, march: 3, april: 4, june: 6, july: 7, august: 8, september: 9, october: 10, november: 11, december: 12 };\n\nfunction fnv(str) {\n  let h = 0x811c9dc5;\n  const s = String(str || '');\n  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193); }\n  return ('0000000' + (h >>> 0).toString(16)).slice(-8);\n}\n\nfunction decodeEntities(s) {\n  return String(s || '')\n    .replace(/<!\\[CDATA\\[([\\s\\S]*?)\\]\\]>/g, '$1')\n    .replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&').replace(/&lt;/gi, '<').replace(/&gt;/gi, '>')\n    .replace(/&quot;/gi, '\"').replace(/&#0?39;|&apos;|&rsquo;|&lsquo;/gi, \"'\").replace(/&ldquo;|&rdquo;/gi, '\"')\n    .replace(/&ndash;/gi, '-').replace(/&mdash;/gi, '-').replace(/&hellip;/gi, '...')\n    .replace(/&#(\\d+);/g, (m, d) => String.fromCharCode(+d))\n    .replace(/&#x([0-9a-f]+);/gi, (m, h) => String.fromCharCode(parseInt(h, 16)));\n}\n\nfunction clean(s) { return decodeEntities(String(s || '').replace(/<[^>]+>/g, ' ')).replace(/\\s+/g, ' ').trim(); }\n\n// n8n's Code sandbox has no URL global, so URLs are handled with small string helpers.\nfunction parseUrl(u) {\n  const m = String(u || '').trim().match(/^([a-z][a-z0-9+.\\-]*:)\\/\\/([^\\/?#]*)([^?#]*)(\\?[^#]*)?(#.*)?$/i);\n  return m ? { protocol: m[1].toLowerCase(), host: m[2].toLowerCase(), path: m[3] || '/', search: m[4] || '', hash: m[5] || '' } : null;\n}\nfunction normPath(p) {\n  const q = p.search(/[?#]/); const tail = q >= 0 ? p.slice(q) : ''; const path = q >= 0 ? p.slice(0, q) : p;\n  const out = [];\n  for (const seg of path.split('/')) { if (seg === '..') { if (out.length > 1) out.pop(); } else if (seg !== '.') out.push(seg); }\n  let r = out.join('/'); if (!r.startsWith('/')) r = '/' + r;\n  return r + tail;\n}\nfunction absUrl(href, base) {\n  if (!href) return '';\n  href = decodeEntities(href).trim();\n  if (/^(javascript:|mailto:|tel:|#)/i.test(href)) return '';\n  if (/^[a-z][a-z0-9+.\\-]*:/i.test(href)) return href;\n  const b = parseUrl(base); if (!b) return '';\n  if (href.startsWith('//')) return b.protocol + href;\n  const origin = b.protocol + '//' + b.host;\n  if (href.startsWith('/')) return origin + normPath(href);\n  if (href.startsWith('?')) return origin + b.path + href;\n  return origin + normPath(b.path.replace(/[^\\/]*$/, '') + href);\n}\nfunction canonicalUrl(u) {\n  const p = parseUrl(u);\n  if (!p) return String(u || '').toLowerCase().trim();\n  const qs = p.search.replace(/^\\?/, '').split('&').filter(kv => kv && !/^(utm_[a-z]+|fbclid|gclid)=/i.test(kv)).join('&');\n  return (p.host.replace(/^www\\./, '') + p.path.replace(/\\/+$/, '') + (qs ? '?' + qs : '')).toLowerCase();\n}\n\nfunction pad(n) { return String(n).padStart(2, '0'); }\nfunction isoFromParts(y, m, d) {\n  y = +y; m = +m; d = +d;\n  if (y < 100) y += 2000;\n  if (!(y > 1990 && y < 2100 && m >= 1 && m <= 12 && d >= 1 && d <= 31)) return '';\n  return `${y}-${pad(m)}-${pad(d)}`;\n}\n\n// Parse the many date styles these sources use. order: 'dmy' (India/UN default) or 'mdy' (US sources).\nfunction toISODate(input, order) {\n  if (!input) return '';\n  let s = clean(String(input)).replace(/(\\d)(st|nd|rd|th)\\b/gi, '$1');\n  let m;\n  if ((m = s.match(/\\b(\\d{4})-(\\d{1,2})-(\\d{1,2})/))) return isoFromParts(m[1], m[2], m[3]);\n  if ((m = s.match(/\\b(\\d{1,2})[\\/\\-.](\\d{1,2})[\\/\\-.](\\d{2,4})\\b/))) {\n    return order === 'mdy' ? isoFromParts(m[3], m[1], m[2]) : isoFromParts(m[3], m[2], m[1]);\n  }\n  if ((m = s.match(/\\b(\\d{1,2})[\\s\\-.\\/]+([A-Za-z]{3,9})\\.?,?[\\s\\-.\\/]+(\\d{2,4})\\b/))) {\n    const mo = MONTHS[m[2].toLowerCase()];\n    if (mo) return isoFromParts(m[3], mo, m[1]);\n  }\n  if ((m = s.match(/\\b([A-Za-z]{3,9})\\.?\\s+(\\d{1,2}),?\\s+(\\d{4})\\b/))) {\n    const mo = MONTHS[m[1].toLowerCase()];\n    if (mo) return isoFromParts(m[3], mo, m[2]);\n  }\n  const t = Date.parse(s);\n  if (!isNaN(t)) { const d = new Date(t); return isoFromParts(d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate()); }\n  return '';\n}\n\n// Find a deadline mentioned inside free text (\"Deadline: 10 Oct. 2026\", \"Last date of submission 31-10-2026\").\nfunction deadlineFromText(text, order) {\n  const s = clean(text);\n  const re = /(deadline|last date(?: of submission)?|closing date|closes(?: on)?|apply by|due date|submission date|bid end date|last submission date)\\s*(?:is|:|-|–)?\\s*([^|;]{4,40})/gi;\n  let m;\n  while ((m = re.exec(s))) { const d = toISODate(m[2], order); if (d) return d; }\n  return '';\n}\n\nfunction todayISO() {\n  // Asia/Kolkata date\n  const now = new Date(Date.now() + 5.5 * 3600 * 1000);\n  return isoFromParts(now.getUTCFullYear(), now.getUTCMonth() + 1, now.getUTCDate());\n}\n\nfunction matchCount(text, keywords) {\n  const s = ' ' + String(text || '').toLowerCase() + ' ';\n  let n = 0;\n  for (const k of keywords || []) { if (k && s.includes(String(k).toLowerCase())) n++; }\n  return n;\n}\n\nfunction truthy(v) { return v === true || /^(true|yes|y|1|on)$/i.test(String(v == null ? '' : v).trim()); }\n\nfunction makeUid(o) {\n  if (o.ref_no && String(o.ref_no).replace(/\\W/g, '').length >= 6) return 'R' + fnv(String(o.ref_no).toLowerCase().replace(/\\W/g, ''));\n  if (o.url && !o.url_is_listing) return 'U' + fnv(canonicalUrl(o.url));\n  return 'T' + fnv(titleKey(o.title) + '|' + String(o.funder_buyer || '').toLowerCase());\n}\n\nfunction titleKey(t) { return String(t || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().slice(0, 90); }\n\n// Pull the first JSON object/array out of a model reply (handles ```json fences and <json> tags).\nfunction extractJson(text) {\n  if (!text) return null;\n  let t = String(text);\n  const tag = t.match(/<json>([\\s\\S]*?)<\\/json>/i);\n  if (tag) t = tag[1];\n  t = t.replace(/```(?:json)?/gi, '');\n  const starts = [t.indexOf('{'), t.indexOf('[')].filter(i => i >= 0);\n  if (!starts.length) return null;\n  const start = Math.min(...starts);\n  const end = Math.max(t.lastIndexOf('}'), t.lastIndexOf(']'));\n  if (end <= start) return null;\n  try { return JSON.parse(t.slice(start, end + 1)); } catch (e) { return null; }\n}\n\nfunction claudeText(resp) {\n  if (!resp || !Array.isArray(resp.content)) return '';\n  return resp.content.filter(b => b.type === 'text').map(b => b.text).join('');\n}\n\nfunction cut(s, n) { s = String(s || ''); return s.length > n ? s.slice(0, n - 1) + '…' : s; }\n// ---------- end shared helpers ----------\n\n// One Claude call per changed HTML page: pull out the individual opportunities listed on it.\nconst cfg = $('Config').first().json;\nconst pages = $('Parse Sources').all().map(i => i.json).filter(j => j.kind === 'page');\nif (!pages.length) return [{ json: { skip: true } }];\n\nreturn pages.map(p => ({ json: {\n  meta: { source: p.source, category: p.category, url: p.url, hashKey: p.hashKey, hash: p.hash },\n  request: {\n    model: cfg.extractModel,\n    max_tokens: 4000,\n    system: 'You extract funding and procurement opportunities from scraped web page text. Reply with JSON only, no commentary.',\n    messages: [{ role: 'user', content:\n`Source: ${p.source}\nPage URL: ${p.url}\nCategory hint: ${p.category}\nToday: ${cfg.today}\n\nList every distinct opportunity on this page that an organisation could still apply or bid for: tenders, RFPs, RFQs, EOIs, calls for proposals, grants, challenges, accelerator calls. Skip items that are closed, archived, results, award notices, news stories, job vacancies, and site navigation. A corrigendum counts only if the base tender is still open.\n\nFor each item return:\n- title (as written)\n- funder_buyer (organisation offering it)\n- country (or state, for India)\n- deadline (YYYY-MM-DD, or \"\" if not shown; dates on Indian and UN sites are day-month-year)\n- amount (value, budget or grant size as written, or \"\")\n- url (the absolute link shown next to the item in [square brackets]; if none, \"\")\n- ref_no (tender number, bid number, call ID, or \"\")\n- summary (one sentence on scope, from the page only)\n\nReturn exactly: {\"opportunities\":[{...}]}  (empty list if none)\n\nPAGE TEXT:\n<<<\n${p.text}\n>>>` }]\n  }\n} }));\n"
+      },
+      "id": "a1b2c3d4-0000-4000-8000-000000000016",
+      "name": "Build Extract Requests",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2260,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "a1b2c3d4-0000-4000-8000-000000000017",
+              "leftValue": "={{ !!$json.skip }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "false",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "a1b2c3d4-0000-4000-8000-000000000018",
+      "name": "Any pages?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2480,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.request) }}",
+        "options": {
+          "timeout": 120000,
+          "batching": {
+            "batch": {
+              "batchSize": 1,
+              "batchInterval": 1200
+            }
+          }
+        }
+      },
+      "id": "a1b2c3d4-0000-4000-8000-000000000019",
+      "name": "Claude: Extract",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        2700,
+        220
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueRegularOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_ANTHROPIC_CRED",
+          "name": "Anthropic API key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// ---------- shared helpers (same block in every Code node) ----------\nconst CATEGORIES = ['CSR - India', 'Govt Tender - India', 'Intl Govt Tender (partner-led)', 'International Grant', 'Innovation Grant - India'];\nconst MONTHS = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, sept: 9, oct: 10, nov: 11, dec: 12,\n  january: 1, february: 2, march: 3, april: 4, june: 6, july: 7, august: 8, september: 9, october: 10, november: 11, december: 12 };\n\nfunction fnv(str) {\n  let h = 0x811c9dc5;\n  const s = String(str || '');\n  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193); }\n  return ('0000000' + (h >>> 0).toString(16)).slice(-8);\n}\n\nfunction decodeEntities(s) {\n  return String(s || '')\n    .replace(/<!\\[CDATA\\[([\\s\\S]*?)\\]\\]>/g, '$1')\n    .replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&').replace(/&lt;/gi, '<').replace(/&gt;/gi, '>')\n    .replace(/&quot;/gi, '\"').replace(/&#0?39;|&apos;|&rsquo;|&lsquo;/gi, \"'\").replace(/&ldquo;|&rdquo;/gi, '\"')\n    .replace(/&ndash;/gi, '-').replace(/&mdash;/gi, '-').replace(/&hellip;/gi, '...')\n    .replace(/&#(\\d+);/g, (m, d) => String.fromCharCode(+d))\n    .replace(/&#x([0-9a-f]+);/gi, (m, h) => String.fromCharCode(parseInt(h, 16)));\n}\n\nfunction clean(s) { return decodeEntities(String(s || '').replace(/<[^>]+>/g, ' ')).replace(/\\s+/g, ' ').trim(); }\n\n// n8n's Code sandbox has no URL global, so URLs are handled with small string helpers.\nfunction parseUrl(u) {\n  const m = String(u || '').trim().match(/^([a-z][a-z0-9+.\\-]*:)\\/\\/([^\\/?#]*)([^?#]*)(\\?[^#]*)?(#.*)?$/i);\n  return m ? { protocol: m[1].toLowerCase(), host: m[2].toLowerCase(), path: m[3] || '/', search: m[4] || '', hash: m[5] || '' } : null;\n}\nfunction normPath(p) {\n  const q = p.search(/[?#]/); const tail = q >= 0 ? p.slice(q) : ''; const path = q >= 0 ? p.slice(0, q) : p;\n  const out = [];\n  for (const seg of path.split('/')) { if (seg === '..') { if (out.length > 1) out.pop(); } else if (seg !== '.') out.push(seg); }\n  let r = out.join('/'); if (!r.startsWith('/')) r = '/' + r;\n  return r + tail;\n}\nfunction absUrl(href, base) {\n  if (!href) return '';\n  href = decodeEntities(href).trim();\n  if (/^(javascript:|mailto:|tel:|#)/i.test(href)) return '';\n  if (/^[a-z][a-z0-9+.\\-]*:/i.test(href)) return href;\n  const b = parseUrl(base); if (!b) return '';\n  if (href.startsWith('//')) return b.protocol + href;\n  const origin = b.protocol + '//' + b.host;\n  if (href.startsWith('/')) return origin + normPath(href);\n  if (href.startsWith('?')) return origin + b.path + href;\n  return origin + normPath(b.path.replace(/[^\\/]*$/, '') + href);\n}\nfunction canonicalUrl(u) {\n  const p = parseUrl(u);\n  if (!p) return String(u || '').toLowerCase().trim();\n  const qs = p.search.replace(/^\\?/, '').split('&').filter(kv => kv && !/^(utm_[a-z]+|fbclid|gclid)=/i.test(kv)).join('&');\n  return (p.host.replace(/^www\\./, '') + p.path.replace(/\\/+$/, '') + (qs ? '?' + qs : '')).toLowerCase();\n}\n\nfunction pad(n) { return String(n).padStart(2, '0'); }\nfunction isoFromParts(y, m, d) {\n  y = +y; m = +m; d = +d;\n  if (y < 100) y += 2000;\n  if (!(y > 1990 && y < 2100 && m >= 1 && m <= 12 && d >= 1 && d <= 31)) return '';\n  return `${y}-${pad(m)}-${pad(d)}`;\n}\n\n// Parse the many date styles these sources use. order: 'dmy' (India/UN default) or 'mdy' (US sources).\nfunction toISODate(input, order) {\n  if (!input) return '';\n  let s = clean(String(input)).replace(/(\\d)(st|nd|rd|th)\\b/gi, '$1');\n  let m;\n  if ((m = s.match(/\\b(\\d{4})-(\\d{1,2})-(\\d{1,2})/))) return isoFromParts(m[1], m[2], m[3]);\n  if ((m = s.match(/\\b(\\d{1,2})[\\/\\-.](\\d{1,2})[\\/\\-.](\\d{2,4})\\b/))) {\n    return order === 'mdy' ? isoFromParts(m[3], m[1], m[2]) : isoFromParts(m[3], m[2], m[1]);\n  }\n  if ((m = s.match(/\\b(\\d{1,2})[\\s\\-.\\/]+([A-Za-z]{3,9})\\.?,?[\\s\\-.\\/]+(\\d{2,4})\\b/))) {\n    const mo = MONTHS[m[2].toLowerCase()];\n    if (mo) return isoFromParts(m[3], mo, m[1]);\n  }\n  if ((m = s.match(/\\b([A-Za-z]{3,9})\\.?\\s+(\\d{1,2}),?\\s+(\\d{4})\\b/))) {\n    const mo = MONTHS[m[1].toLowerCase()];\n    if (mo) return isoFromParts(m[3], mo, m[2]);\n  }\n  const t = Date.parse(s);\n  if (!isNaN(t)) { const d = new Date(t); return isoFromParts(d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate()); }\n  return '';\n}\n\n// Find a deadline mentioned inside free text (\"Deadline: 10 Oct. 2026\", \"Last date of submission 31-10-2026\").\nfunction deadlineFromText(text, order) {\n  const s = clean(text);\n  const re = /(deadline|last date(?: of submission)?|closing date|closes(?: on)?|apply by|due date|submission date|bid end date|last submission date)\\s*(?:is|:|-|–)?\\s*([^|;]{4,40})/gi;\n  let m;\n  while ((m = re.exec(s))) { const d = toISODate(m[2], order); if (d) return d; }\n  return '';\n}\n\nfunction todayISO() {\n  // Asia/Kolkata date\n  const now = new Date(Date.now() + 5.5 * 3600 * 1000);\n  return isoFromParts(now.getUTCFullYear(), now.getUTCMonth() + 1, now.getUTCDate());\n}\n\nfunction matchCount(text, keywords) {\n  const s = ' ' + String(text || '').toLowerCase() + ' ';\n  let n = 0;\n  for (const k of keywords || []) { if (k && s.includes(String(k).toLowerCase())) n++; }\n  return n;\n}\n\nfunction truthy(v) { return v === true || /^(true|yes|y|1|on)$/i.test(String(v == null ? '' : v).trim()); }\n\nfunction makeUid(o) {\n  if (o.ref_no && String(o.ref_no).replace(/\\W/g, '').length >= 6) return 'R' + fnv(String(o.ref_no).toLowerCase().replace(/\\W/g, ''));\n  if (o.url && !o.url_is_listing) return 'U' + fnv(canonicalUrl(o.url));\n  return 'T' + fnv(titleKey(o.title) + '|' + String(o.funder_buyer || '').toLowerCase());\n}\n\nfunction titleKey(t) { return String(t || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().slice(0, 90); }\n\n// Pull the first JSON object/array out of a model reply (handles ```json fences and <json> tags).\nfunction extractJson(text) {\n  if (!text) return null;\n  let t = String(text);\n  const tag = t.match(/<json>([\\s\\S]*?)<\\/json>/i);\n  if (tag) t = tag[1];\n  t = t.replace(/```(?:json)?/gi, '');\n  const starts = [t.indexOf('{'), t.indexOf('[')].filter(i => i >= 0);\n  if (!starts.length) return null;\n  const start = Math.min(...starts);\n  const end = Math.max(t.lastIndexOf('}'), t.lastIndexOf(']'));\n  if (end <= start) return null;\n  try { return JSON.parse(t.slice(start, end + 1)); } catch (e) { return null; }\n}\n\nfunction claudeText(resp) {\n  if (!resp || !Array.isArray(resp.content)) return '';\n  return resp.content.filter(b => b.type === 'text').map(b => b.text).join('');\n}\n\nfunction cut(s, n) { s = String(s || ''); return s.length > n ? s.slice(0, n - 1) + '…' : s; }\n// ---------- end shared helpers ----------\n\n// Read Claude's extraction replies and turn them into opportunity items.\nconst cfg = $('Config').first().json;\nconst store = $getWorkflowStaticData('global');\nstore.pageHashes = store.pageHashes || {};\nconst out = [];\nconst items = $input.all();\nfor (let i = 0; i < items.length; i++) {\n  const meta = $('Build Extract Requests').itemMatching(i).json.meta;\n  const res = items[i].json || {};\n  if (res.error || !res.content) { out.push({ json: { kind: 'error', source: meta.source, error: 'extract: ' + cut(res.error ? (res.error.message || JSON.stringify(res.error)) : 'no content', 200) } }); continue; }\n  const parsed = extractJson(claudeText(res));\n  const list = Array.isArray(parsed) ? parsed : (parsed && parsed.opportunities) || null;\n  if (!list) { out.push({ json: { kind: 'error', source: meta.source, error: 'extract: reply was not JSON' } }); continue; }\n  if (meta.hashKey) store.pageHashes[meta.hashKey] = meta.hash; // only remember the page once it was read successfully\n  for (const o of list) {\n    if (!o || !o.title) continue;\n    const url = absUrl(o.url, meta.url) || meta.url;\n    out.push({ json: {\n      kind: 'opp', category: meta.category, source: meta.source, title: clean(o.title), funder_buyer: clean(o.funder_buyer),\n      country: clean(o.country), deadline: toISODate(o.deadline, 'ymd') || toISODate(o.deadline), amount: clean(o.amount),\n      url, url_is_listing: url === meta.url, ref_no: clean(o.ref_no), summary: cut(clean(o.summary), 700), published: ''\n    } });\n  }\n  if (!list.length) out.push({ json: { kind: 'empty', source: meta.source } });\n}\nreturn out;\n"
+      },
+      "id": "a1b2c3d4-0000-4000-8000-000000000020",
+      "name": "Parse Extracted",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2920,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ---------- shared helpers (same block in every Code node) ----------\nconst CATEGORIES = ['CSR - India', 'Govt Tender - India', 'Intl Govt Tender (partner-led)', 'International Grant', 'Innovation Grant - India'];\nconst MONTHS = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, sept: 9, oct: 10, nov: 11, dec: 12,\n  january: 1, february: 2, march: 3, april: 4, june: 6, july: 7, august: 8, september: 9, october: 10, november: 11, december: 12 };\n\nfunction fnv(str) {\n  let h = 0x811c9dc5;\n  const s = String(str || '');\n  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193); }\n  return ('0000000' + (h >>> 0).toString(16)).slice(-8);\n}\n\nfunction decodeEntities(s) {\n  return String(s || '')\n    .replace(/<!\\[CDATA\\[([\\s\\S]*?)\\]\\]>/g, '$1')\n    .replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&').replace(/&lt;/gi, '<').replace(/&gt;/gi, '>')\n    .replace(/&quot;/gi, '\"').replace(/&#0?39;|&apos;|&rsquo;|&lsquo;/gi, \"'\").replace(/&ldquo;|&rdquo;/gi, '\"')\n    .replace(/&ndash;/gi, '-').replace(/&mdash;/gi, '-').replace(/&hellip;/gi, '...')\n    .replace(/&#(\\d+);/g, (m, d) => String.fromCharCode(+d))\n    .replace(/&#x([0-9a-f]+);/gi, (m, h) => String.fromCharCode(parseInt(h, 16)));\n}\n\nfunction clean(s) { return decodeEntities(String(s || '').replace(/<[^>]+>/g, ' ')).replace(/\\s+/g, ' ').trim(); }\n\n// n8n's Code sandbox has no URL global, so URLs are handled with small string helpers.\nfunction parseUrl(u) {\n  const m = String(u || '').trim().match(/^([a-z][a-z0-9+.\\-]*:)\\/\\/([^\\/?#]*)([^?#]*)(\\?[^#]*)?(#.*)?$/i);\n  return m ? { protocol: m[1].toLowerCase(), host: m[2].toLowerCase(), path: m[3] || '/', search: m[4] || '', hash: m[5] || '' } : null;\n}\nfunction normPath(p) {\n  const q = p.search(/[?#]/); const tail = q >= 0 ? p.slice(q) : ''; const path = q >= 0 ? p.slice(0, q) : p;\n  const out = [];\n  for (const seg of path.split('/')) { if (seg === '..') { if (out.length > 1) out.pop(); } else if (seg !== '.') out.push(seg); }\n  let r = out.join('/'); if (!r.startsWith('/')) r = '/' + r;\n  return r + tail;\n}\nfunction absUrl(href, base) {\n  if (!href) return '';\n  href = decodeEntities(href).trim();\n  if (/^(javascript:|mailto:|tel:|#)/i.test(href)) return '';\n  if (/^[a-z][a-z0-9+.\\-]*:/i.test(href)) return href;\n  const b = parseUrl(base); if (!b) return '';\n  if (href.startsWith('//')) return b.protocol + href;\n  const origin = b.protocol + '//' + b.host;\n  if (href.startsWith('/')) return origin + normPath(href);\n  if (href.startsWith('?')) return origin + b.path + href;\n  return origin + normPath(b.path.replace(/[^\\/]*$/, '') + href);\n}\nfunction canonicalUrl(u) {\n  const p = parseUrl(u);\n  if (!p) return String(u || '').toLowerCase().trim();\n  const qs = p.search.replace(/^\\?/, '').split('&').filter(kv => kv && !/^(utm_[a-z]+|fbclid|gclid)=/i.test(kv)).join('&');\n  return (p.host.replace(/^www\\./, '') + p.path.replace(/\\/+$/, '') + (qs ? '?' + qs : '')).toLowerCase();\n}\n\nfunction pad(n) { return String(n).padStart(2, '0'); }\nfunction isoFromParts(y, m, d) {\n  y = +y; m = +m; d = +d;\n  if (y < 100) y += 2000;\n  if (!(y > 1990 && y < 2100 && m >= 1 && m <= 12 && d >= 1 && d <= 31)) return '';\n  return `${y}-${pad(m)}-${pad(d)}`;\n}\n\n// Parse the many date styles these sources use. order: 'dmy' (India/UN default) or 'mdy' (US sources).\nfunction toISODate(input, order) {\n  if (!input) return '';\n  let s = clean(String(input)).replace(/(\\d)(st|nd|rd|th)\\b/gi, '$1');\n  let m;\n  if ((m = s.match(/\\b(\\d{4})-(\\d{1,2})-(\\d{1,2})/))) return isoFromParts(m[1], m[2], m[3]);\n  if ((m = s.match(/\\b(\\d{1,2})[\\/\\-.](\\d{1,2})[\\/\\-.](\\d{2,4})\\b/))) {\n    return order === 'mdy' ? isoFromParts(m[3], m[1], m[2]) : isoFromParts(m[3], m[2], m[1]);\n  }\n  if ((m = s.match(/\\b(\\d{1,2})[\\s\\-.\\/]+([A-Za-z]{3,9})\\.?,?[\\s\\-.\\/]+(\\d{2,4})\\b/))) {\n    const mo = MONTHS[m[2].toLowerCase()];\n    if (mo) return isoFromParts(m[3], mo, m[1]);\n  }\n  if ((m = s.match(/\\b([A-Za-z]{3,9})\\.?\\s+(\\d{1,2}),?\\s+(\\d{4})\\b/))) {\n    const mo = MONTHS[m[1].toLowerCase()];\n    if (mo) return isoFromParts(m[3], mo, m[2]);\n  }\n  const t = Date.parse(s);\n  if (!isNaN(t)) { const d = new Date(t); return isoFromParts(d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate()); }\n  return '';\n}\n\n// Find a deadline mentioned inside free text (\"Deadline: 10 Oct. 2026\", \"Last date of submission 31-10-2026\").\nfunction deadlineFromText(text, order) {\n  const s = clean(text);\n  const re = /(deadline|last date(?: of submission)?|closing date|closes(?: on)?|apply by|due date|submission date|bid end date|last submission date)\\s*(?:is|:|-|–)?\\s*([^|;]{4,40})/gi;\n  let m;\n  while ((m = re.exec(s))) { const d = toISODate(m[2], order); if (d) return d; }\n  return '';\n}\n\nfunction todayISO() {\n  // Asia/Kolkata date\n  const now = new Date(Date.now() + 5.5 * 3600 * 1000);\n  return isoFromParts(now.getUTCFullYear(), now.getUTCMonth() + 1, now.getUTCDate());\n}\n\nfunction matchCount(text, keywords) {\n  const s = ' ' + String(text || '').toLowerCase() + ' ';\n  let n = 0;\n  for (const k of keywords || []) { if (k && s.includes(String(k).toLowerCase())) n++; }\n  return n;\n}\n\nfunction truthy(v) { return v === true || /^(true|yes|y|1|on)$/i.test(String(v == null ? '' : v).trim()); }\n\nfunction makeUid(o) {\n  if (o.ref_no && String(o.ref_no).replace(/\\W/g, '').length >= 6) return 'R' + fnv(String(o.ref_no).toLowerCase().replace(/\\W/g, ''));\n  if (o.url && !o.url_is_listing) return 'U' + fnv(canonicalUrl(o.url));\n  return 'T' + fnv(titleKey(o.title) + '|' + String(o.funder_buyer || '').toLowerCase());\n}\n\nfunction titleKey(t) { return String(t || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().slice(0, 90); }\n\n// Pull the first JSON object/array out of a model reply (handles ```json fences and <json> tags).\nfunction extractJson(text) {\n  if (!text) return null;\n  let t = String(text);\n  const tag = t.match(/<json>([\\s\\S]*?)<\\/json>/i);\n  if (tag) t = tag[1];\n  t = t.replace(/```(?:json)?/gi, '');\n  const starts = [t.indexOf('{'), t.indexOf('[')].filter(i => i >= 0);\n  if (!starts.length) return null;\n  const start = Math.min(...starts);\n  const end = Math.max(t.lastIndexOf('}'), t.lastIndexOf(']'));\n  if (end <= start) return null;\n  try { return JSON.parse(t.slice(start, end + 1)); } catch (e) { return null; }\n}\n\nfunction claudeText(resp) {\n  if (!resp || !Array.isArray(resp.content)) return '';\n  return resp.content.filter(b => b.type === 'text').map(b => b.text).join('');\n}\n\nfunction cut(s, n) { s = String(s || ''); return s.length > n ? s.slice(0, n - 1) + '…' : s; }\n// ---------- end shared helpers ----------\n\n// Claude web search covers portals that can't be fetched directly (GeM, state e-proc portals, ADB, Global Fund, CSR sites).\nconst cfg = $('Config').first().json;\nconst rows = $('Read Sources').all().map(i => i.json).filter(r => truthy(r.active) && String(r.parser || '').toLowerCase() === 'websearch');\nif (!cfg.enableWebSearch || !rows.length) return [{ json: { skip: true } }];\nconst profile = $('Read Profile').all().map(i => i.json).filter(r => r.field).map(r => `${r.field}: ${r.value}`).join('\\n');\n\nreturn rows.map(r => ({ json: {\n  meta: { source: r.name || 'Web search', category: r.category },\n  request: {\n    model: cfg.searchModel,\n    max_tokens: 8000,\n    tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: cfg.webSearchMaxUses }],\n    messages: [{ role: 'user', content:\n`You are a bid and grants researcher for the organisation below. Today is ${cfg.today}.\n\nORGANISATION PROFILE\n${profile}\n\nTASK\nSearch the web for opportunities in this category: ${r.category}\nFocus: ${r.body || r.notes || r.category}\n\nRules:\n- Only include opportunities that are open now or announced with a future deadline (after ${cfg.today}).\n- Prefer the official page (portal notice, funder's call page). Aggregator links are fine when the official page is not indexed.\n- Do not include news articles, closed calls or award announcements.\n- Never guess a deadline; use \"\" if the page does not state it.\n- At most 12 items, most relevant first.\n\nFinish with the results inside <json></json> tags in exactly this shape:\n<json>{\"opportunities\":[{\"title\":\"\",\"funder_buyer\":\"\",\"country\":\"\",\"deadline\":\"YYYY-MM-DD\",\"amount\":\"\",\"url\":\"\",\"ref_no\":\"\",\"summary\":\"one sentence on scope\"}]}</json>` }]\n  }\n} }));\n"
+      },
+      "id": "a1b2c3d4-0000-4000-8000-000000000021",
+      "name": "Build Web Search",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3140,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "a1b2c3d4-0000-4000-8000-000000000022",
+              "leftValue": "={{ !!$json.skip }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "false",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "a1b2c3d4-0000-4000-8000-000000000023",
+      "name": "Web search on?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        3360,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.request) }}",
+        "options": {
+          "timeout": 300000,
+          "batching": {
+            "batch": {
+              "batchSize": 1,
+              "batchInterval": 2000
+            }
+          }
+        }
+      },
+      "id": "a1b2c3d4-0000-4000-8000-000000000024",
+      "name": "Claude: Web Search",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        3580,
+        220
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueRegularOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_ANTHROPIC_CRED",
+          "name": "Anthropic API key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// ---------- shared helpers (same block in every Code node) ----------\nconst CATEGORIES = ['CSR - India', 'Govt Tender - India', 'Intl Govt Tender (partner-led)', 'International Grant', 'Innovation Grant - India'];\nconst MONTHS = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, sept: 9, oct: 10, nov: 11, dec: 12,\n  january: 1, february: 2, march: 3, april: 4, june: 6, july: 7, august: 8, september: 9, october: 10, november: 11, december: 12 };\n\nfunction fnv(str) {\n  let h = 0x811c9dc5;\n  const s = String(str || '');\n  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193); }\n  return ('0000000' + (h >>> 0).toString(16)).slice(-8);\n}\n\nfunction decodeEntities(s) {\n  return String(s || '')\n    .replace(/<!\\[CDATA\\[([\\s\\S]*?)\\]\\]>/g, '$1')\n    .replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&').replace(/&lt;/gi, '<').replace(/&gt;/gi, '>')\n    .replace(/&quot;/gi, '\"').replace(/&#0?39;|&apos;|&rsquo;|&lsquo;/gi, \"'\").replace(/&ldquo;|&rdquo;/gi, '\"')\n    .replace(/&ndash;/gi, '-').replace(/&mdash;/gi, '-').replace(/&hellip;/gi, '...')\n    .replace(/&#(\\d+);/g, (m, d) => String.fromCharCode(+d))\n    .replace(/&#x([0-9a-f]+);/gi, (m, h) => String.fromCharCode(parseInt(h, 16)));\n}\n\nfunction clean(s) { return decodeEntities(String(s || '').replace(/<[^>]+>/g, ' ')).replace(/\\s+/g, ' ').trim(); }\n\n// n8n's Code sandbox has no URL global, so URLs are handled with small string helpers.\nfunction parseUrl(u) {\n  const m = String(u || '').trim().match(/^([a-z][a-z0-9+.\\-]*:)\\/\\/([^\\/?#]*)([^?#]*)(\\?[^#]*)?(#.*)?$/i);\n  return m ? { protocol: m[1].toLowerCase(), host: m[2].toLowerCase(), path: m[3] || '/', search: m[4] || '', hash: m[5] || '' } : null;\n}\nfunction normPath(p) {\n  const q = p.search(/[?#]/); const tail = q >= 0 ? p.slice(q) : ''; const path = q >= 0 ? p.slice(0, q) : p;\n  const out = [];\n  for (const seg of path.split('/')) { if (seg === '..') { if (out.length > 1) out.pop(); } else if (seg !== '.') out.push(seg); }\n  let r = out.join('/'); if (!r.startsWith('/')) r = '/' + r;\n  return r + tail;\n}\nfunction absUrl(href, base) {\n  if (!href) return '';\n  href = decodeEntities(href).trim();\n  if (/^(javascript:|mailto:|tel:|#)/i.test(href)) return '';\n  if (/^[a-z][a-z0-9+.\\-]*:/i.test(href)) return href;\n  const b = parseUrl(base); if (!b) return '';\n  if (href.startsWith('//')) return b.protocol + href;\n  const origin = b.protocol + '//' + b.host;\n  if (href.startsWith('/')) return origin + normPath(href);\n  if (href.startsWith('?')) return origin + b.path + href;\n  return origin + normPath(b.path.replace(/[^\\/]*$/, '') + href);\n}\nfunction canonicalUrl(u) {\n  const p = parseUrl(u);\n  if (!p) return String(u || '').toLowerCase().trim();\n  const qs = p.search.replace(/^\\?/, '').split('&').filter(kv => kv && !/^(utm_[a-z]+|fbclid|gclid)=/i.test(kv)).join('&');\n  return (p.host.replace(/^www\\./, '') + p.path.replace(/\\/+$/, '') + (qs ? '?' + qs : '')).toLowerCase();\n}\n\nfunction pad(n) { return String(n).padStart(2, '0'); }\nfunction isoFromParts(y, m, d) {\n  y = +y; m = +m; d = +d;\n  if (y < 100) y += 2000;\n  if (!(y > 1990 && y < 2100 && m >= 1 && m <= 12 && d >= 1 && d <= 31)) return '';\n  return `${y}-${pad(m)}-${pad(d)}`;\n}\n\n// Parse the many date styles these sources use. order: 'dmy' (India/UN default) or 'mdy' (US sources).\nfunction toISODate(input, order) {\n  if (!input) return '';\n  let s = clean(String(input)).replace(/(\\d)(st|nd|rd|th)\\b/gi, '$1');\n  let m;\n  if ((m = s.match(/\\b(\\d{4})-(\\d{1,2})-(\\d{1,2})/))) return isoFromParts(m[1], m[2], m[3]);\n  if ((m = s.match(/\\b(\\d{1,2})[\\/\\-.](\\d{1,2})[\\/\\-.](\\d{2,4})\\b/))) {\n    return order === 'mdy' ? isoFromParts(m[3], m[1], m[2]) : isoFromParts(m[3], m[2], m[1]);\n  }\n  if ((m = s.match(/\\b(\\d{1,2})[\\s\\-.\\/]+([A-Za-z]{3,9})\\.?,?[\\s\\-.\\/]+(\\d{2,4})\\b/))) {\n    const mo = MONTHS[m[2].toLowerCase()];\n    if (mo) return isoFromParts(m[3], mo, m[1]);\n  }\n  if ((m = s.match(/\\b([A-Za-z]{3,9})\\.?\\s+(\\d{1,2}),?\\s+(\\d{4})\\b/))) {\n    const mo = MONTHS[m[1].toLowerCase()];\n    if (mo) return isoFromParts(m[3], mo, m[2]);\n  }\n  const t = Date.parse(s);\n  if (!isNaN(t)) { const d = new Date(t); return isoFromParts(d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate()); }\n  return '';\n}\n\n// Find a deadline mentioned inside free text (\"Deadline: 10 Oct. 2026\", \"Last date of submission 31-10-2026\").\nfunction deadlineFromText(text, order) {\n  const s = clean(text);\n  const re = /(deadline|last date(?: of submission)?|closing date|closes(?: on)?|apply by|due date|submission date|bid end date|last submission date)\\s*(?:is|:|-|–)?\\s*([^|;]{4,40})/gi;\n  let m;\n  while ((m = re.exec(s))) { const d = toISODate(m[2], order); if (d) return d; }\n  return '';\n}\n\nfunction todayISO() {\n  // Asia/Kolkata date\n  const now = new Date(Date.now() + 5.5 * 3600 * 1000);\n  return isoFromParts(now.getUTCFullYear(), now.getUTCMonth() + 1, now.getUTCDate());\n}\n\nfunction matchCount(text, keywords) {\n  const s = ' ' + String(text || '').toLowerCase() + ' ';\n  let n = 0;\n  for (const k of keywords || []) { if (k && s.includes(String(k).toLowerCase())) n++; }\n  return n;\n}\n\nfunction truthy(v) { return v === true || /^(true|yes|y|1|on)$/i.test(String(v == null ? '' : v).trim()); }\n\nfunction makeUid(o) {\n  if (o.ref_no && String(o.ref_no).replace(/\\W/g, '').length >= 6) return 'R' + fnv(String(o.ref_no).toLowerCase().replace(/\\W/g, ''));\n  if (o.url && !o.url_is_listing) return 'U' + fnv(canonicalUrl(o.url));\n  return 'T' + fnv(titleKey(o.title) + '|' + String(o.funder_buyer || '').toLowerCase());\n}\n\nfunction titleKey(t) { return String(t || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().slice(0, 90); }\n\n// Pull the first JSON object/array out of a model reply (handles ```json fences and <json> tags).\nfunction extractJson(text) {\n  if (!text) return null;\n  let t = String(text);\n  const tag = t.match(/<json>([\\s\\S]*?)<\\/json>/i);\n  if (tag) t = tag[1];\n  t = t.replace(/```(?:json)?/gi, '');\n  const starts = [t.indexOf('{'), t.indexOf('[')].filter(i => i >= 0);\n  if (!starts.length) return null;\n  const start = Math.min(...starts);\n  const end = Math.max(t.lastIndexOf('}'), t.lastIndexOf(']'));\n  if (end <= start) return null;\n  try { return JSON.parse(t.slice(start, end + 1)); } catch (e) { return null; }\n}\n\nfunction claudeText(resp) {\n  if (!resp || !Array.isArray(resp.content)) return '';\n  return resp.content.filter(b => b.type === 'text').map(b => b.text).join('');\n}\n\nfunction cut(s, n) { s = String(s || ''); return s.length > n ? s.slice(0, n - 1) + '…' : s; }\n// ---------- end shared helpers ----------\n\n// Read web-search replies.\nconst out = [];\nconst items = $input.all();\nfor (let i = 0; i < items.length; i++) {\n  const meta = $('Build Web Search').itemMatching(i).json.meta;\n  const res = items[i].json || {};\n  if (res.error || !res.content) { out.push({ json: { kind: 'error', source: meta.source, error: 'websearch: ' + cut(res.error ? (res.error.message || JSON.stringify(res.error)) : 'no content', 200) } }); continue; }\n  const parsed = extractJson(claudeText(res));\n  const list = Array.isArray(parsed) ? parsed : (parsed && parsed.opportunities) || [];\n  const searches = (res.usage && res.usage.server_tool_use && res.usage.server_tool_use.web_search_requests) || 0;\n  out.push({ json: { kind: 'searchstats', source: meta.source, searches } });\n  for (const o of list) {\n    if (!o || !o.title || !o.url) continue;\n    out.push({ json: {\n      kind: 'opp', category: meta.category, source: meta.source, title: clean(o.title), funder_buyer: clean(o.funder_buyer),\n      country: clean(o.country), deadline: toISODate(o.deadline), amount: clean(o.amount), url: String(o.url).trim(),\n      ref_no: clean(o.ref_no), summary: cut(clean(o.summary), 700), published: ''\n    } });\n  }\n}\nreturn out;\n"
+      },
+      "id": "a1b2c3d4-0000-4000-8000-000000000025",
+      "name": "Parse Web Search",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3800,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ---------- shared helpers (same block in every Code node) ----------\nconst CATEGORIES = ['CSR - India', 'Govt Tender - India', 'Intl Govt Tender (partner-led)', 'International Grant', 'Innovation Grant - India'];\nconst MONTHS = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, sept: 9, oct: 10, nov: 11, dec: 12,\n  january: 1, february: 2, march: 3, april: 4, june: 6, july: 7, august: 8, september: 9, october: 10, november: 11, december: 12 };\n\nfunction fnv(str) {\n  let h = 0x811c9dc5;\n  const s = String(str || '');\n  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193); }\n  return ('0000000' + (h >>> 0).toString(16)).slice(-8);\n}\n\nfunction decodeEntities(s) {\n  return String(s || '')\n    .replace(/<!\\[CDATA\\[([\\s\\S]*?)\\]\\]>/g, '$1')\n    .replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&').replace(/&lt;/gi, '<').replace(/&gt;/gi, '>')\n    .replace(/&quot;/gi, '\"').replace(/&#0?39;|&apos;|&rsquo;|&lsquo;/gi, \"'\").replace(/&ldquo;|&rdquo;/gi, '\"')\n    .replace(/&ndash;/gi, '-').replace(/&mdash;/gi, '-').replace(/&hellip;/gi, '...')\n    .replace(/&#(\\d+);/g, (m, d) => String.fromCharCode(+d))\n    .replace(/&#x([0-9a-f]+);/gi, (m, h) => String.fromCharCode(parseInt(h, 16)));\n}\n\nfunction clean(s) { return decodeEntities(String(s || '').replace(/<[^>]+>/g, ' ')).replace(/\\s+/g, ' ').trim(); }\n\n// n8n's Code sandbox has no URL global, so URLs are handled with small string helpers.\nfunction parseUrl(u) {\n  const m = String(u || '').trim().match(/^([a-z][a-z0-9+.\\-]*:)\\/\\/([^\\/?#]*)([^?#]*)(\\?[^#]*)?(#.*)?$/i);\n  return m ? { protocol: m[1].toLowerCase(), host: m[2].toLowerCase(), path: m[3] || '/', search: m[4] || '', hash: m[5] || '' } : null;\n}\nfunction normPath(p) {\n  const q = p.search(/[?#]/); const tail = q >= 0 ? p.slice(q) : ''; const path = q >= 0 ? p.slice(0, q) : p;\n  const out = [];\n  for (const seg of path.split('/')) { if (seg === '..') { if (out.length > 1) out.pop(); } else if (seg !== '.') out.push(seg); }\n  let r = out.join('/'); if (!r.startsWith('/')) r = '/' + r;\n  return r + tail;\n}\nfunction absUrl(href, base) {\n  if (!href) return '';\n  href = decodeEntities(href).trim();\n  if (/^(javascript:|mailto:|tel:|#)/i.test(href)) return '';\n  if (/^[a-z][a-z0-9+.\\-]*:/i.test(href)) return href;\n  const b = parseUrl(base); if (!b) return '';\n  if (href.startsWith('//')) return b.protocol + href;\n  const origin = b.protocol + '//' + b.host;\n  if (href.startsWith('/')) return origin + normPath(href);\n  if (href.startsWith('?')) return origin + b.path + href;\n  return origin + normPath(b.path.replace(/[^\\/]*$/, '') + href);\n}\nfunction canonicalUrl(u) {\n  const p = parseUrl(u);\n  if (!p) return String(u || '').toLowerCase().trim();\n  const qs = p.search.replace(/^\\?/, '').split('&').filter(kv => kv && !/^(utm_[a-z]+|fbclid|gclid)=/i.test(kv)).join('&');\n  return (p.host.replace(/^www\\./, '') + p.path.replace(/\\/+$/, '') + (qs ? '?' + qs : '')).toLowerCase();\n}\n\nfunction pad(n) { return String(n).padStart(2, '0'); }\nfunction isoFromParts(y, m, d) {\n  y = +y; m = +m; d = +d;\n  if (y < 100) y += 2000;\n  if (!(y > 1990 && y < 2100 && m >= 1 && m <= 12 && d >= 1 && d <= 31)) return '';\n  return `${y}-${pad(m)}-${pad(d)}`;\n}\n\n// Parse the many date styles these sources use. order: 'dmy' (India/UN default) or 'mdy' (US sources).\nfunction toISODate(input, order) {\n  if (!input) return '';\n  let s = clean(String(input)).replace(/(\\d)(st|nd|rd|th)\\b/gi, '$1');\n  let m;\n  if ((m = s.match(/\\b(\\d{4})-(\\d{1,2})-(\\d{1,2})/))) return isoFromParts(m[1], m[2], m[3]);\n  if ((m = s.match(/\\b(\\d{1,2})[\\/\\-.](\\d{1,2})[\\/\\-.](\\d{2,4})\\b/))) {\n    return order === 'mdy' ? isoFromParts(m[3], m[1], m[2]) : isoFromParts(m[3], m[2], m[1]);\n  }\n  if ((m = s.match(/\\b(\\d{1,2})[\\s\\-.\\/]+([A-Za-z]{3,9})\\.?,?[\\s\\-.\\/]+(\\d{2,4})\\b/))) {\n    const mo = MONTHS[m[2].toLowerCase()];\n    if (mo) return isoFromParts(m[3], mo, m[1]);\n  }\n  if ((m = s.match(/\\b([A-Za-z]{3,9})\\.?\\s+(\\d{1,2}),?\\s+(\\d{4})\\b/))) {\n    const mo = MONTHS[m[1].toLowerCase()];\n    if (mo) return isoFromParts(m[3], mo, m[2]);\n  }\n  const t = Date.parse(s);\n  if (!isNaN(t)) { const d = new Date(t); return isoFromParts(d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate()); }\n  return '';\n}\n\n// Find a deadline mentioned inside free text (\"Deadline: 10 Oct. 2026\", \"Last date of submission 31-10-2026\").\nfunction deadlineFromText(text, order) {\n  const s = clean(text);\n  const re = /(deadline|last date(?: of submission)?|closing date|closes(?: on)?|apply by|due date|submission date|bid end date|last submission date)\\s*(?:is|:|-|–)?\\s*([^|;]{4,40})/gi;\n  let m;\n  while ((m = re.exec(s))) { const d = toISODate(m[2], order); if (d) return d; }\n  return '';\n}\n\nfunction todayISO() {\n  // Asia/Kolkata date\n  const now = new Date(Date.now() + 5.5 * 3600 * 1000);\n  return isoFromParts(now.getUTCFullYear(), now.getUTCMonth() + 1, now.getUTCDate());\n}\n\nfunction matchCount(text, keywords) {\n  const s = ' ' + String(text || '').toLowerCase() + ' ';\n  let n = 0;\n  for (const k of keywords || []) { if (k && s.includes(String(k).toLowerCase())) n++; }\n  return n;\n}\n\nfunction truthy(v) { return v === true || /^(true|yes|y|1|on)$/i.test(String(v == null ? '' : v).trim()); }\n\nfunction makeUid(o) {\n  if (o.ref_no && String(o.ref_no).replace(/\\W/g, '').length >= 6) return 'R' + fnv(String(o.ref_no).toLowerCase().replace(/\\W/g, ''));\n  if (o.url && !o.url_is_listing) return 'U' + fnv(canonicalUrl(o.url));\n  return 'T' + fnv(titleKey(o.title) + '|' + String(o.funder_buyer || '').toLowerCase());\n}\n\nfunction titleKey(t) { return String(t || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().slice(0, 90); }\n\n// Pull the first JSON object/array out of a model reply (handles ```json fences and <json> tags).\nfunction extractJson(text) {\n  if (!text) return null;\n  let t = String(text);\n  const tag = t.match(/<json>([\\s\\S]*?)<\\/json>/i);\n  if (tag) t = tag[1];\n  t = t.replace(/```(?:json)?/gi, '');\n  const starts = [t.indexOf('{'), t.indexOf('[')].filter(i => i >= 0);\n  if (!starts.length) return null;\n  const start = Math.min(...starts);\n  const end = Math.max(t.lastIndexOf('}'), t.lastIndexOf(']'));\n  if (end <= start) return null;\n  try { return JSON.parse(t.slice(start, end + 1)); } catch (e) { return null; }\n}\n\nfunction claudeText(resp) {\n  if (!resp || !Array.isArray(resp.content)) return '';\n  return resp.content.filter(b => b.type === 'text').map(b => b.text).join('');\n}\n\nfunction cut(s, n) { s = String(s || ''); return s.length > n ? s.slice(0, n - 1) + '…' : s; }\n// ---------- end shared helpers ----------\n\n// Merge every source, drop expired / irrelevant / already-seen items.\nconst cfg = $('Config').first().json;\nfunction safeAll(name) { try { return $(name).isExecuted ? $(name).all() : []; } catch (e) { return []; } }\n\nconst minDate = (() => { const d = new Date(cfg.today + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + (cfg.minDaysToDeadline || 0)); return d.toISOString().slice(0, 10); })();\nconst existingUids = new Set(), existingTitles = new Set();\nfor (const r of safeAll('Read Existing').map(i => i.json)) {\n  if (r.uid) existingUids.add(String(r.uid));\n  const tk = titleKey(r.title); if (tk.length >= 25) existingTitles.add(tk);\n}\n// Leads already in the CRM (if connected)\nfor (const r of safeAll('Read CRM Leads').map(i => i.json)) {\n  for (const u of r.uids || []) existingUids.add(String(u));\n  for (const t of r.titles || []) { const tk = titleKey(t); if (tk.length >= 25) existingTitles.add(tk); }\n}\n\nconst all = [...safeAll('Parse Sources'), ...safeAll('Parse Extracted'), ...safeAll('Parse Web Search')]\n  .map(i => i.json).filter(j => j.kind === 'opp');\n\nconst seen = new Set(), seenTitles = new Set(), keep = [];\nlet expired = 0, excluded = 0, dupes = 0;\nfor (const o of all) {\n  if (o.deadline && o.deadline < minDate) { expired++; continue; }\n  if (matchCount(o.title, cfg.excludeKeywords) > 0) { excluded++; continue; }\n  o.uid = makeUid(o);\n  const tk = titleKey(o.title);\n  if (existingUids.has(o.uid) || seen.has(o.uid) || (tk.length >= 25 && (existingTitles.has(tk) || seenTitles.has(tk)))) { dupes++; continue; }\n  seen.add(o.uid); if (tk.length >= 25) seenTitles.add(tk);\n  o.relevance = matchCount(`${o.title} ${o.summary}`, cfg.keywords);\n  keep.push(o);\n}\nkeep.sort((a, b) => (b.relevance - a.relevance) || String(a.deadline || '9999').localeCompare(String(b.deadline || '9999')));\nconst picked = keep.slice(0, cfg.maxNewPerRun);\nconst stats = { candidates: all.length, expired, excluded, dupes, newItems: keep.length, deferred: keep.length - picked.length };\nif (!picked.length) return [{ json: { skip: true, stats } }];\nreturn picked.map((o, k) => ({ json: Object.assign(o, k === 0 ? { stats } : {}) }));\n"
+      },
+      "id": "a1b2c3d4-0000-4000-8000-000000000026",
+      "name": "Collect & Dedupe",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4020,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ---------- shared helpers (same block in every Code node) ----------\nconst CATEGORIES = ['CSR - India', 'Govt Tender - India', 'Intl Govt Tender (partner-led)', 'International Grant', 'Innovation Grant - India'];\nconst MONTHS = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, sept: 9, oct: 10, nov: 11, dec: 12,\n  january: 1, february: 2, march: 3, april: 4, june: 6, july: 7, august: 8, september: 9, october: 10, november: 11, december: 12 };\n\nfunction fnv(str) {\n  let h = 0x811c9dc5;\n  const s = String(str || '');\n  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193); }\n  return ('0000000' + (h >>> 0).toString(16)).slice(-8);\n}\n\nfunction decodeEntities(s) {\n  return String(s || '')\n    .replace(/<!\\[CDATA\\[([\\s\\S]*?)\\]\\]>/g, '$1')\n    .replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&').replace(/&lt;/gi, '<').replace(/&gt;/gi, '>')\n    .replace(/&quot;/gi, '\"').replace(/&#0?39;|&apos;|&rsquo;|&lsquo;/gi, \"'\").replace(/&ldquo;|&rdquo;/gi, '\"')\n    .replace(/&ndash;/gi, '-').replace(/&mdash;/gi, '-').replace(/&hellip;/gi, '...')\n    .replace(/&#(\\d+);/g, (m, d) => String.fromCharCode(+d))\n    .replace(/&#x([0-9a-f]+);/gi, (m, h) => String.fromCharCode(parseInt(h, 16)));\n}\n\nfunction clean(s) { return decodeEntities(String(s || '').replace(/<[^>]+>/g, ' ')).replace(/\\s+/g, ' ').trim(); }\n\n// n8n's Code sandbox has no URL global, so URLs are handled with small string helpers.\nfunction parseUrl(u) {\n  const m = String(u || '').trim().match(/^([a-z][a-z0-9+.\\-]*:)\\/\\/([^\\/?#]*)([^?#]*)(\\?[^#]*)?(#.*)?$/i);\n  return m ? { protocol: m[1].toLowerCase(), host: m[2].toLowerCase(), path: m[3] || '/', search: m[4] || '', hash: m[5] || '' } : null;\n}\nfunction normPath(p) {\n  const q = p.search(/[?#]/); const tail = q >= 0 ? p.slice(q) : ''; const path = q >= 0 ? p.slice(0, q) : p;\n  const out = [];\n  for (const seg of path.split('/')) { if (seg === '..') { if (out.length > 1) out.pop(); } else if (seg !== '.') out.push(seg); }\n  let r = out.join('/'); if (!r.startsWith('/')) r = '/' + r;\n  return r + tail;\n}\nfunction absUrl(href, base) {\n  if (!href) return '';\n  href = decodeEntities(href).trim();\n  if (/^(javascript:|mailto:|tel:|#)/i.test(href)) return '';\n  if (/^[a-z][a-z0-9+.\\-]*:/i.test(href)) return href;\n  const b = parseUrl(base); if (!b) return '';\n  if (href.startsWith('//')) return b.protocol + href;\n  const origin = b.protocol + '//' + b.host;\n  if (href.startsWith('/')) return origin + normPath(href);\n  if (href.startsWith('?')) return origin + b.path + href;\n  return origin + normPath(b.path.replace(/[^\\/]*$/, '') + href);\n}\nfunction canonicalUrl(u) {\n  const p = parseUrl(u);\n  if (!p) return String(u || '').toLowerCase().trim();\n  const qs = p.search.replace(/^\\?/, '').split('&').filter(kv => kv && !/^(utm_[a-z]+|fbclid|gclid)=/i.test(kv)).join('&');\n  return (p.host.replace(/^www\\./, '') + p.path.replace(/\\/+$/, '') + (qs ? '?' + qs : '')).toLowerCase();\n}\n\nfunction pad(n) { return String(n).padStart(2, '0'); }\nfunction isoFromParts(y, m, d) {\n  y = +y; m = +m; d = +d;\n  if (y < 100) y += 2000;\n  if (!(y > 1990 && y < 2100 && m >= 1 && m <= 12 && d >= 1 && d <= 31)) return '';\n  return `${y}-${pad(m)}-${pad(d)}`;\n}\n\n// Parse the many date styles these sources use. order: 'dmy' (India/UN default) or 'mdy' (US sources).\nfunction toISODate(input, order) {\n  if (!input) return '';\n  let s = clean(String(input)).replace(/(\\d)(st|nd|rd|th)\\b/gi, '$1');\n  let m;\n  if ((m = s.match(/\\b(\\d{4})-(\\d{1,2})-(\\d{1,2})/))) return isoFromParts(m[1], m[2], m[3]);\n  if ((m = s.match(/\\b(\\d{1,2})[\\/\\-.](\\d{1,2})[\\/\\-.](\\d{2,4})\\b/))) {\n    return order === 'mdy' ? isoFromParts(m[3], m[1], m[2]) : isoFromParts(m[3], m[2], m[1]);\n  }\n  if ((m = s.match(/\\b(\\d{1,2})[\\s\\-.\\/]+([A-Za-z]{3,9})\\.?,?[\\s\\-.\\/]+(\\d{2,4})\\b/))) {\n    const mo = MONTHS[m[2].toLowerCase()];\n    if (mo) return isoFromParts(m[3], mo, m[1]);\n  }\n  if ((m = s.match(/\\b([A-Za-z]{3,9})\\.?\\s+(\\d{1,2}),?\\s+(\\d{4})\\b/))) {\n    const mo = MONTHS[m[1].toLowerCase()];\n    if (mo) return isoFromParts(m[3], mo, m[2]);\n  }\n  const t = Date.parse(s);\n  if (!isNaN(t)) { const d = new Date(t); return isoFromParts(d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate()); }\n  return '';\n}\n\n// Find a deadline mentioned inside free text (\"Deadline: 10 Oct. 2026\", \"Last date of submission 31-10-2026\").\nfunction deadlineFromText(text, order) {\n  const s = clean(text);\n  const re = /(deadline|last date(?: of submission)?|closing date|closes(?: on)?|apply by|due date|submission date|bid end date|last submission date)\\s*(?:is|:|-|–)?\\s*([^|;]{4,40})/gi;\n  let m;\n  while ((m = re.exec(s))) { const d = toISODate(m[2], order); if (d) return d; }\n  return '';\n}\n\nfunction todayISO() {\n  // Asia/Kolkata date\n  const now = new Date(Date.now() + 5.5 * 3600 * 1000);\n  return isoFromParts(now.getUTCFullYear(), now.getUTCMonth() + 1, now.getUTCDate());\n}\n\nfunction matchCount(text, keywords) {\n  const s = ' ' + String(text || '').toLowerCase() + ' ';\n  let n = 0;\n  for (const k of keywords || []) { if (k && s.includes(String(k).toLowerCase())) n++; }\n  return n;\n}\n\nfunction truthy(v) { return v === true || /^(true|yes|y|1|on)$/i.test(String(v == null ? '' : v).trim()); }\n\nfunction makeUid(o) {\n  if (o.ref_no && String(o.ref_no).replace(/\\W/g, '').length >= 6) return 'R' + fnv(String(o.ref_no).toLowerCase().replace(/\\W/g, ''));\n  if (o.url && !o.url_is_listing) return 'U' + fnv(canonicalUrl(o.url));\n  return 'T' + fnv(titleKey(o.title) + '|' + String(o.funder_buyer || '').toLowerCase());\n}\n\nfunction titleKey(t) { return String(t || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().slice(0, 90); }\n\n// Pull the first JSON object/array out of a model reply (handles ```json fences and <json> tags).\nfunction extractJson(text) {\n  if (!text) return null;\n  let t = String(text);\n  const tag = t.match(/<json>([\\s\\S]*?)<\\/json>/i);\n  if (tag) t = tag[1];\n  t = t.replace(/```(?:json)?/gi, '');\n  const starts = [t.indexOf('{'), t.indexOf('[')].filter(i => i >= 0);\n  if (!starts.length) return null;\n  const start = Math.min(...starts);\n  const end = Math.max(t.lastIndexOf('}'), t.lastIndexOf(']'));\n  if (end <= start) return null;\n  try { return JSON.parse(t.slice(start, end + 1)); } catch (e) { return null; }\n}\n\nfunction claudeText(resp) {\n  if (!resp || !Array.isArray(resp.content)) return '';\n  return resp.content.filter(b => b.type === 'text').map(b => b.text).join('');\n}\n\nfunction cut(s, n) { s = String(s || ''); return s.length > n ? s.slice(0, n - 1) + '…' : s; }\n// ---------- end shared helpers ----------\n\n// Group new opportunities into batches and ask Claude to score them against the ReMeDi profile and partner network.\nconst cfg = $('Config').first().json;\nconst items = $input.all().map(i => i.json).filter(j => !j.skip && j.uid);\nif (!items.length) return [{ json: { skip: true } }];\n\nconst profile = $('Read Profile').all().map(i => i.json).filter(r => r.field).map(r => `- ${r.field}: ${r.value}`).join('\\n');\nconst partners = $('Read Partners').all().map(i => i.json).filter(r => r.partner)\n  .map(r => `- ${r.partner} | type: ${r.type || ''} | countries: ${r.countries || ''} | can do: ${r.capabilities || ''} | relationship: ${r.relationship || ''}`).join('\\n') || '- (none listed yet)';\n\nconst system = `You are the bid/no-bid analyst for Neurosynaptic Communications (ReMeDi). You score funding and tender opportunities for fit and say how to pursue them. Be strict: most items found by a crawler are not worth pursuing. Reply with JSON only.`;\n\nconst rubric = `SCORING (fit_score 0-100 = sum of four parts)\n1. Solution fit (0-40): telemedicine/teleconsultation, point-of-care diagnostics, health kiosks, NCD or maternal screening, mobile medical units with diagnostics, primary care / PHC / Ayushman Arogya Mandir digitisation, rural health delivery. Generic IT, pure construction, drugs supply, hospital ICU staffing or unrelated research score low.\n2. Eligibility (0-25): can Neurosynaptic (Indian private company, est. 2002) apply or bid directly? If not, can one of the listed partners lead or act as local entity? Grants restricted to NGOs, startups under 10 years, US/EU/UK-registered leads, or nationals of a country with trade restrictions on India score low unless a listed partner covers it.\n3. Value and strategic fit (0-15): size, repeatability across states/countries, focus geographies (India, South Asia, Africa), reference value.\n4. Feasibility (0-20): time left before the deadline (under 10 days is hard), technical requirements, EMD/turnover, certification demands, language.\n\nPRIORITY: \"Apply\" (score >= 75 and eligible now), \"Consider\" (55-74), \"Watch\" (35-54, or not open yet), \"Skip\" (< 35 or not eligible).\nCATEGORY: exactly one of: ${CATEGORIES.join(' | ')}.\nELIGIBILITY: \"Direct\" | \"Via partner\" | \"Not eligible\" | \"Check\".`;\n\nconst batches = [];\nfor (let k = 0; k < items.length; k += cfg.scoreBatchSize) batches.push(items.slice(k, k + cfg.scoreBatchSize));\n\nreturn batches.map(batch => ({ json: {\n  items: batch,\n  request: {\n    model: cfg.scoreModel,\n    max_tokens: 6000,\n    system,\n    messages: [{ role: 'user', content:\n`Today: ${cfg.today}\n\nORGANISATION PROFILE\n${profile}\n\nPARTNER NETWORK\n${partners}\n\n${rubric}\n\nOPPORTUNITIES\n${JSON.stringify(batch.map(o => ({ uid: o.uid, category_hint: o.category, title: o.title, funder_buyer: o.funder_buyer, country: o.country, deadline: o.deadline, amount: o.amount, ref_no: o.ref_no, summary: o.summary, url: o.url, source: o.source })), null, 1)}\n\nFor every opportunity return one result:\n{\"uid\":\"\", \"fit_score\":0, \"priority\":\"\", \"category\":\"\", \"eligibility\":\"\", \"partner_needed\":\"Yes|No\", \"suggested_partner\":\"name from the partner list, or the type of partner to find\", \"why_fit\":\"max 25 words\", \"risks\":\"max 20 words\", \"next_step\":\"max 15 words, concrete\", \"deadline\":\"YYYY-MM-DD or \\\"\\\"\", \"amount\":\"\", \"country\":\"\"}\n\nReturn exactly: {\"results\":[...]}` }]\n  }\n} }));\n"
+      },
+      "id": "a1b2c3d4-0000-4000-8000-000000000027",
+      "name": "Build Score Batches",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4240,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "a1b2c3d4-0000-4000-8000-000000000028",
+              "leftValue": "={{ !!$json.skip }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "false",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "a1b2c3d4-0000-4000-8000-000000000029",
+      "name": "Anything new?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        4460,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.request) }}",
+        "options": {
+          "timeout": 180000,
+          "batching": {
+            "batch": {
+              "batchSize": 1,
+              "batchInterval": 1500
+            }
+          }
+        }
+      },
+      "id": "a1b2c3d4-0000-4000-8000-000000000030",
+      "name": "Claude: Score",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        4680,
+        220
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueRegularOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_ANTHROPIC_CRED",
+          "name": "Anthropic API key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// ---------- shared helpers (same block in every Code node) ----------\nconst CATEGORIES = ['CSR - India', 'Govt Tender - India', 'Intl Govt Tender (partner-led)', 'International Grant', 'Innovation Grant - India'];\nconst MONTHS = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, sept: 9, oct: 10, nov: 11, dec: 12,\n  january: 1, february: 2, march: 3, april: 4, june: 6, july: 7, august: 8, september: 9, october: 10, november: 11, december: 12 };\n\nfunction fnv(str) {\n  let h = 0x811c9dc5;\n  const s = String(str || '');\n  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193); }\n  return ('0000000' + (h >>> 0).toString(16)).slice(-8);\n}\n\nfunction decodeEntities(s) {\n  return String(s || '')\n    .replace(/<!\\[CDATA\\[([\\s\\S]*?)\\]\\]>/g, '$1')\n    .replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&').replace(/&lt;/gi, '<').replace(/&gt;/gi, '>')\n    .replace(/&quot;/gi, '\"').replace(/&#0?39;|&apos;|&rsquo;|&lsquo;/gi, \"'\").replace(/&ldquo;|&rdquo;/gi, '\"')\n    .replace(/&ndash;/gi, '-').replace(/&mdash;/gi, '-').replace(/&hellip;/gi, '...')\n    .replace(/&#(\\d+);/g, (m, d) => String.fromCharCode(+d))\n    .replace(/&#x([0-9a-f]+);/gi, (m, h) => String.fromCharCode(parseInt(h, 16)));\n}\n\nfunction clean(s) { return decodeEntities(String(s || '').replace(/<[^>]+>/g, ' ')).replace(/\\s+/g, ' ').trim(); }\n\n// n8n's Code sandbox has no URL global, so URLs are handled with small string helpers.\nfunction parseUrl(u) {\n  const m = String(u || '').trim().match(/^([a-z][a-z0-9+.\\-]*:)\\/\\/([^\\/?#]*)([^?#]*)(\\?[^#]*)?(#.*)?$/i);\n  return m ? { protocol: m[1].toLowerCase(), host: m[2].toLowerCase(), path: m[3] || '/', search: m[4] || '', hash: m[5] || '' } : null;\n}\nfunction normPath(p) {\n  const q = p.search(/[?#]/); const tail = q >= 0 ? p.slice(q) : ''; const path = q >= 0 ? p.slice(0, q) : p;\n  const out = [];\n  for (const seg of path.split('/')) { if (seg === '..') { if (out.length > 1) out.pop(); } else if (seg !== '.') out.push(seg); }\n  let r = out.join('/'); if (!r.startsWith('/')) r = '/' + r;\n  return r + tail;\n}\nfunction absUrl(href, base) {\n  if (!href) return '';\n  href = decodeEntities(href).trim();\n  if (/^(javascript:|mailto:|tel:|#)/i.test(href)) return '';\n  if (/^[a-z][a-z0-9+.\\-]*:/i.test(href)) return href;\n  const b = parseUrl(base); if (!b) return '';\n  if (href.startsWith('//')) return b.protocol + href;\n  const origin = b.protocol + '//' + b.host;\n  if (href.startsWith('/')) return origin + normPath(href);\n  if (href.startsWith('?')) return origin + b.path + href;\n  return origin + normPath(b.path.replace(/[^\\/]*$/, '') + href);\n}\nfunction canonicalUrl(u) {\n  const p = parseUrl(u);\n  if (!p) return String(u || '').toLowerCase().trim();\n  const qs = p.search.replace(/^\\?/, '').split('&').filter(kv => kv && !/^(utm_[a-z]+|fbclid|gclid)=/i.test(kv)).join('&');\n  return (p.host.replace(/^www\\./, '') + p.path.replace(/\\/+$/, '') + (qs ? '?' + qs : '')).toLowerCase();\n}\n\nfunction pad(n) { return String(n).padStart(2, '0'); }\nfunction isoFromParts(y, m, d) {\n  y = +y; m = +m; d = +d;\n  if (y < 100) y += 2000;\n  if (!(y > 1990 && y < 2100 && m >= 1 && m <= 12 && d >= 1 && d <= 31)) return '';\n  return `${y}-${pad(m)}-${pad(d)}`;\n}\n\n// Parse the many date styles these sources use. order: 'dmy' (India/UN default) or 'mdy' (US sources).\nfunction toISODate(input, order) {\n  if (!input) return '';\n  let s = clean(String(input)).replace(/(\\d)(st|nd|rd|th)\\b/gi, '$1');\n  let m;\n  if ((m = s.match(/\\b(\\d{4})-(\\d{1,2})-(\\d{1,2})/))) return isoFromParts(m[1], m[2], m[3]);\n  if ((m = s.match(/\\b(\\d{1,2})[\\/\\-.](\\d{1,2})[\\/\\-.](\\d{2,4})\\b/))) {\n    return order === 'mdy' ? isoFromParts(m[3], m[1], m[2]) : isoFromParts(m[3], m[2], m[1]);\n  }\n  if ((m = s.match(/\\b(\\d{1,2})[\\s\\-.\\/]+([A-Za-z]{3,9})\\.?,?[\\s\\-.\\/]+(\\d{2,4})\\b/))) {\n    const mo = MONTHS[m[2].toLowerCase()];\n    if (mo) return isoFromParts(m[3], mo, m[1]);\n  }\n  if ((m = s.match(/\\b([A-Za-z]{3,9})\\.?\\s+(\\d{1,2}),?\\s+(\\d{4})\\b/))) {\n    const mo = MONTHS[m[1].toLowerCase()];\n    if (mo) return isoFromParts(m[3], mo, m[2]);\n  }\n  const t = Date.parse(s);\n  if (!isNaN(t)) { const d = new Date(t); return isoFromParts(d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate()); }\n  return '';\n}\n\n// Find a deadline mentioned inside free text (\"Deadline: 10 Oct. 2026\", \"Last date of submission 31-10-2026\").\nfunction deadlineFromText(text, order) {\n  const s = clean(text);\n  const re = /(deadline|last date(?: of submission)?|closing date|closes(?: on)?|apply by|due date|submission date|bid end date|last submission date)\\s*(?:is|:|-|–)?\\s*([^|;]{4,40})/gi;\n  let m;\n  while ((m = re.exec(s))) { const d = toISODate(m[2], order); if (d) return d; }\n  return '';\n}\n\nfunction todayISO() {\n  // Asia/Kolkata date\n  const now = new Date(Date.now() + 5.5 * 3600 * 1000);\n  return isoFromParts(now.getUTCFullYear(), now.getUTCMonth() + 1, now.getUTCDate());\n}\n\nfunction matchCount(text, keywords) {\n  const s = ' ' + String(text || '').toLowerCase() + ' ';\n  let n = 0;\n  for (const k of keywords || []) { if (k && s.includes(String(k).toLowerCase())) n++; }\n  return n;\n}\n\nfunction truthy(v) { return v === true || /^(true|yes|y|1|on)$/i.test(String(v == null ? '' : v).trim()); }\n\nfunction makeUid(o) {\n  if (o.ref_no && String(o.ref_no).replace(/\\W/g, '').length >= 6) return 'R' + fnv(String(o.ref_no).toLowerCase().replace(/\\W/g, ''));\n  if (o.url && !o.url_is_listing) return 'U' + fnv(canonicalUrl(o.url));\n  return 'T' + fnv(titleKey(o.title) + '|' + String(o.funder_buyer || '').toLowerCase());\n}\n\nfunction titleKey(t) { return String(t || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().slice(0, 90); }\n\n// Pull the first JSON object/array out of a model reply (handles ```json fences and <json> tags).\nfunction extractJson(text) {\n  if (!text) return null;\n  let t = String(text);\n  const tag = t.match(/<json>([\\s\\S]*?)<\\/json>/i);\n  if (tag) t = tag[1];\n  t = t.replace(/```(?:json)?/gi, '');\n  const starts = [t.indexOf('{'), t.indexOf('[')].filter(i => i >= 0);\n  if (!starts.length) return null;\n  const start = Math.min(...starts);\n  const end = Math.max(t.lastIndexOf('}'), t.lastIndexOf(']'));\n  if (end <= start) return null;\n  try { return JSON.parse(t.slice(start, end + 1)); } catch (e) { return null; }\n}\n\nfunction claudeText(resp) {\n  if (!resp || !Array.isArray(resp.content)) return '';\n  return resp.content.filter(b => b.type === 'text').map(b => b.text).join('');\n}\n\nfunction cut(s, n) { s = String(s || ''); return s.length > n ? s.slice(0, n - 1) + '…' : s; }\n// ---------- end shared helpers ----------\n\n// Merge scores with the original items into sheet rows.\nconst cfg = $('Config').first().json;\nconst rows = [];\nconst items = $input.all();\nfor (let i = 0; i < items.length; i++) {\n  const batch = $('Build Score Batches').itemMatching(i).json.items || [];\n  const res = items[i].json || {};\n  const parsed = res.content ? extractJson(claudeText(res)) : null;\n  const list = (parsed && (parsed.results || (Array.isArray(parsed) ? parsed : null))) || [];\n  const byUid = {}; for (const r of list) if (r && r.uid) byUid[String(r.uid)] = r;\n  for (const o of batch) {\n    const s = byUid[o.uid] || {};\n    const score = Number.isFinite(+s.fit_score) && s.fit_score !== '' ? Math.max(0, Math.min(100, Math.round(+s.fit_score))) : '';\n    rows.push({ json: {\n      uid: o.uid,\n      found_on: cfg.today,\n      category: CATEGORIES.includes(s.category) ? s.category : o.category,\n      title: o.title,\n      funder_buyer: o.funder_buyer || '',\n      country: s.country || o.country || '',\n      deadline: toISODate(s.deadline) || o.deadline || '',\n      amount: s.amount || o.amount || '',\n      fit_score: score,\n      priority: score === '' ? 'Review' : (s.priority || ''),\n      eligibility: s.eligibility || '',\n      partner_needed: s.partner_needed || '',\n      suggested_partner: s.suggested_partner || '',\n      why_fit: s.why_fit || (score === '' ? 'Not scored (Claude call failed); review manually.' : ''),\n      risks: s.risks || '',\n      next_step: s.next_step || '',\n      url: o.url || '',\n      ref_no: o.ref_no || '',\n      source: o.source || '',\n      status: 'New',\n      owner: '',\n      notes: ''\n    } });\n  }\n}\nreturn rows;\n"
+      },
+      "id": "a1b2c3d4-0000-4000-8000-000000000031",
+      "name": "Parse Scores",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4900,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $('Config').first().json.sheetId }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Opportunities",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [],
+          "schema": []
+        },
+        "options": {
+          "cellFormat": "RAW",
+          "handlingExtraData": "ignoreIt"
+        }
+      },
+      "id": "a1b2c3d4-0000-4000-8000-000000000032",
+      "name": "Append Opportunities",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        5120,
+        220
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_GOOGLE_SHEETS_CRED",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// ---------- shared helpers (same block in every Code node) ----------\nconst CATEGORIES = ['CSR - India', 'Govt Tender - India', 'Intl Govt Tender (partner-led)', 'International Grant', 'Innovation Grant - India'];\nconst MONTHS = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, sept: 9, oct: 10, nov: 11, dec: 12,\n  january: 1, february: 2, march: 3, april: 4, june: 6, july: 7, august: 8, september: 9, october: 10, november: 11, december: 12 };\n\nfunction fnv(str) {\n  let h = 0x811c9dc5;\n  const s = String(str || '');\n  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193); }\n  return ('0000000' + (h >>> 0).toString(16)).slice(-8);\n}\n\nfunction decodeEntities(s) {\n  return String(s || '')\n    .replace(/<!\\[CDATA\\[([\\s\\S]*?)\\]\\]>/g, '$1')\n    .replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&').replace(/&lt;/gi, '<').replace(/&gt;/gi, '>')\n    .replace(/&quot;/gi, '\"').replace(/&#0?39;|&apos;|&rsquo;|&lsquo;/gi, \"'\").replace(/&ldquo;|&rdquo;/gi, '\"')\n    .replace(/&ndash;/gi, '-').replace(/&mdash;/gi, '-').replace(/&hellip;/gi, '...')\n    .replace(/&#(\\d+);/g, (m, d) => String.fromCharCode(+d))\n    .replace(/&#x([0-9a-f]+);/gi, (m, h) => String.fromCharCode(parseInt(h, 16)));\n}\n\nfunction clean(s) { return decodeEntities(String(s || '').replace(/<[^>]+>/g, ' ')).replace(/\\s+/g, ' ').trim(); }\n\n// n8n's Code sandbox has no URL global, so URLs are handled with small string helpers.\nfunction parseUrl(u) {\n  const m = String(u || '').trim().match(/^([a-z][a-z0-9+.\\-]*:)\\/\\/([^\\/?#]*)([^?#]*)(\\?[^#]*)?(#.*)?$/i);\n  return m ? { protocol: m[1].toLowerCase(), host: m[2].toLowerCase(), path: m[3] || '/', search: m[4] || '', hash: m[5] || '' } : null;\n}\nfunction normPath(p) {\n  const q = p.search(/[?#]/); const tail = q >= 0 ? p.slice(q) : ''; const path = q >= 0 ? p.slice(0, q) : p;\n  const out = [];\n  for (const seg of path.split('/')) { if (seg === '..') { if (out.length > 1) out.pop(); } else if (seg !== '.') out.push(seg); }\n  let r = out.join('/'); if (!r.startsWith('/')) r = '/' + r;\n  return r + tail;\n}\nfunction absUrl(href, base) {\n  if (!href) return '';\n  href = decodeEntities(href).trim();\n  if (/^(javascript:|mailto:|tel:|#)/i.test(href)) return '';\n  if (/^[a-z][a-z0-9+.\\-]*:/i.test(href)) return href;\n  const b = parseUrl(base); if (!b) return '';\n  if (href.startsWith('//')) return b.protocol + href;\n  const origin = b.protocol + '//' + b.host;\n  if (href.startsWith('/')) return origin + normPath(href);\n  if (href.startsWith('?')) return origin + b.path + href;\n  return origin + normPath(b.path.replace(/[^\\/]*$/, '') + href);\n}\nfunction canonicalUrl(u) {\n  const p = parseUrl(u);\n  if (!p) return String(u || '').toLowerCase().trim();\n  const qs = p.search.replace(/^\\?/, '').split('&').filter(kv => kv && !/^(utm_[a-z]+|fbclid|gclid)=/i.test(kv)).join('&');\n  return (p.host.replace(/^www\\./, '') + p.path.replace(/\\/+$/, '') + (qs ? '?' + qs : '')).toLowerCase();\n}\n\nfunction pad(n) { return String(n).padStart(2, '0'); }\nfunction isoFromParts(y, m, d) {\n  y = +y; m = +m; d = +d;\n  if (y < 100) y += 2000;\n  if (!(y > 1990 && y < 2100 && m >= 1 && m <= 12 && d >= 1 && d <= 31)) return '';\n  return `${y}-${pad(m)}-${pad(d)}`;\n}\n\n// Parse the many date styles these sources use. order: 'dmy' (India/UN default) or 'mdy' (US sources).\nfunction toISODate(input, order) {\n  if (!input) return '';\n  let s = clean(String(input)).replace(/(\\d)(st|nd|rd|th)\\b/gi, '$1');\n  let m;\n  if ((m = s.match(/\\b(\\d{4})-(\\d{1,2})-(\\d{1,2})/))) return isoFromParts(m[1], m[2], m[3]);\n  if ((m = s.match(/\\b(\\d{1,2})[\\/\\-.](\\d{1,2})[\\/\\-.](\\d{2,4})\\b/))) {\n    return order === 'mdy' ? isoFromParts(m[3], m[1], m[2]) : isoFromParts(m[3], m[2], m[1]);\n  }\n  if ((m = s.match(/\\b(\\d{1,2})[\\s\\-.\\/]+([A-Za-z]{3,9})\\.?,?[\\s\\-.\\/]+(\\d{2,4})\\b/))) {\n    const mo = MONTHS[m[2].toLowerCase()];\n    if (mo) return isoFromParts(m[3], mo, m[1]);\n  }\n  if ((m = s.match(/\\b([A-Za-z]{3,9})\\.?\\s+(\\d{1,2}),?\\s+(\\d{4})\\b/))) {\n    const mo = MONTHS[m[1].toLowerCase()];\n    if (mo) return isoFromParts(m[3], mo, m[2]);\n  }\n  const t = Date.parse(s);\n  if (!isNaN(t)) { const d = new Date(t); return isoFromParts(d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate()); }\n  return '';\n}\n\n// Find a deadline mentioned inside free text (\"Deadline: 10 Oct. 2026\", \"Last date of submission 31-10-2026\").\nfunction deadlineFromText(text, order) {\n  const s = clean(text);\n  const re = /(deadline|last date(?: of submission)?|closing date|closes(?: on)?|apply by|due date|submission date|bid end date|last submission date)\\s*(?:is|:|-|–)?\\s*([^|;]{4,40})/gi;\n  let m;\n  while ((m = re.exec(s))) { const d = toISODate(m[2], order); if (d) return d; }\n  return '';\n}\n\nfunction todayISO() {\n  // Asia/Kolkata date\n  const now = new Date(Date.now() + 5.5 * 3600 * 1000);\n  return isoFromParts(now.getUTCFullYear(), now.getUTCMonth() + 1, now.getUTCDate());\n}\n\nfunction matchCount(text, keywords) {\n  const s = ' ' + String(text || '').toLowerCase() + ' ';\n  let n = 0;\n  for (const k of keywords || []) { if (k && s.includes(String(k).toLowerCase())) n++; }\n  return n;\n}\n\nfunction truthy(v) { return v === true || /^(true|yes|y|1|on)$/i.test(String(v == null ? '' : v).trim()); }\n\nfunction makeUid(o) {\n  if (o.ref_no && String(o.ref_no).replace(/\\W/g, '').length >= 6) return 'R' + fnv(String(o.ref_no).toLowerCase().replace(/\\W/g, ''));\n  if (o.url && !o.url_is_listing) return 'U' + fnv(canonicalUrl(o.url));\n  return 'T' + fnv(titleKey(o.title) + '|' + String(o.funder_buyer || '').toLowerCase());\n}\n\nfunction titleKey(t) { return String(t || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().slice(0, 90); }\n\n// Pull the first JSON object/array out of a model reply (handles ```json fences and <json> tags).\nfunction extractJson(text) {\n  if (!text) return null;\n  let t = String(text);\n  const tag = t.match(/<json>([\\s\\S]*?)<\\/json>/i);\n  if (tag) t = tag[1];\n  t = t.replace(/```(?:json)?/gi, '');\n  const starts = [t.indexOf('{'), t.indexOf('[')].filter(i => i >= 0);\n  if (!starts.length) return null;\n  const start = Math.min(...starts);\n  const end = Math.max(t.lastIndexOf('}'), t.lastIndexOf(']'));\n  if (end <= start) return null;\n  try { return JSON.parse(t.slice(start, end + 1)); } catch (e) { return null; }\n}\n\nfunction claudeText(resp) {\n  if (!resp || !Array.isArray(resp.content)) return '';\n  return resp.content.filter(b => b.type === 'text').map(b => b.text).join('');\n}\n\nfunction cut(s, n) { s = String(s || ''); return s.length > n ? s.slice(0, n - 1) + '…' : s; }\n// ---------- end shared helpers ----------\n\n// Package the scored rows for the Opportunity CRM (one request per run).\nconst cfg = $('Config').first().json;\nif (!cfg.crmUrl) return [{ json: { skip: true } }];\nconst leads = $input.all().map(i => i.json).filter(r => r.uid && r.title);\nif (!leads.length) return [{ json: { skip: true } }];\nreturn [{ json: { leads, note: `n8n crawler ${cfg.runId}` } }];\n"
+      },
+      "id": "a1b2c3d4-0000-4000-8000-000000000033",
+      "name": "Build CRM Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5340,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "a1b2c3d4-0000-4000-8000-000000000034",
+              "leftValue": "={{ !!$json.skip }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "false",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "a1b2c3d4-0000-4000-8000-000000000035",
+      "name": "CRM on?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        5560,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Config').first().json.crmUrl.replace(/\\/$/, '') }}/api/ingest",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ leads: $json.leads, note: $json.note }) }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "a1b2c3d4-0000-4000-8000-000000000036",
+      "name": "Send to CRM",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        5780,
+        220
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueRegularOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_CRM_CRED",
+          "name": "CRM ingest token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// ---------- shared helpers (same block in every Code node) ----------\nconst CATEGORIES = ['CSR - India', 'Govt Tender - India', 'Intl Govt Tender (partner-led)', 'International Grant', 'Innovation Grant - India'];\nconst MONTHS = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, sept: 9, oct: 10, nov: 11, dec: 12,\n  january: 1, february: 2, march: 3, april: 4, june: 6, july: 7, august: 8, september: 9, october: 10, november: 11, december: 12 };\n\nfunction fnv(str) {\n  let h = 0x811c9dc5;\n  const s = String(str || '');\n  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193); }\n  return ('0000000' + (h >>> 0).toString(16)).slice(-8);\n}\n\nfunction decodeEntities(s) {\n  return String(s || '')\n    .replace(/<!\\[CDATA\\[([\\s\\S]*?)\\]\\]>/g, '$1')\n    .replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&').replace(/&lt;/gi, '<').replace(/&gt;/gi, '>')\n    .replace(/&quot;/gi, '\"').replace(/&#0?39;|&apos;|&rsquo;|&lsquo;/gi, \"'\").replace(/&ldquo;|&rdquo;/gi, '\"')\n    .replace(/&ndash;/gi, '-').replace(/&mdash;/gi, '-').replace(/&hellip;/gi, '...')\n    .replace(/&#(\\d+);/g, (m, d) => String.fromCharCode(+d))\n    .replace(/&#x([0-9a-f]+);/gi, (m, h) => String.fromCharCode(parseInt(h, 16)));\n}\n\nfunction clean(s) { return decodeEntities(String(s || '').replace(/<[^>]+>/g, ' ')).replace(/\\s+/g, ' ').trim(); }\n\n// n8n's Code sandbox has no URL global, so URLs are handled with small string helpers.\nfunction parseUrl(u) {\n  const m = String(u || '').trim().match(/^([a-z][a-z0-9+.\\-]*:)\\/\\/([^\\/?#]*)([^?#]*)(\\?[^#]*)?(#.*)?$/i);\n  return m ? { protocol: m[1].toLowerCase(), host: m[2].toLowerCase(), path: m[3] || '/', search: m[4] || '', hash: m[5] || '' } : null;\n}\nfunction normPath(p) {\n  const q = p.search(/[?#]/); const tail = q >= 0 ? p.slice(q) : ''; const path = q >= 0 ? p.slice(0, q) : p;\n  const out = [];\n  for (const seg of path.split('/')) { if (seg === '..') { if (out.length > 1) out.pop(); } else if (seg !== '.') out.push(seg); }\n  let r = out.join('/'); if (!r.startsWith('/')) r = '/' + r;\n  return r + tail;\n}\nfunction absUrl(href, base) {\n  if (!href) return '';\n  href = decodeEntities(href).trim();\n  if (/^(javascript:|mailto:|tel:|#)/i.test(href)) return '';\n  if (/^[a-z][a-z0-9+.\\-]*:/i.test(href)) return href;\n  const b = parseUrl(base); if (!b) return '';\n  if (href.startsWith('//')) return b.protocol + href;\n  const origin = b.protocol + '//' + b.host;\n  if (href.startsWith('/')) return origin + normPath(href);\n  if (href.startsWith('?')) return origin + b.path + href;\n  return origin + normPath(b.path.replace(/[^\\/]*$/, '') + href);\n}\nfunction canonicalUrl(u) {\n  const p = parseUrl(u);\n  if (!p) return String(u || '').toLowerCase().trim();\n  const qs = p.search.replace(/^\\?/, '').split('&').filter(kv => kv && !/^(utm_[a-z]+|fbclid|gclid)=/i.test(kv)).join('&');\n  return (p.host.replace(/^www\\./, '') + p.path.replace(/\\/+$/, '') + (qs ? '?' + qs : '')).toLowerCase();\n}\n\nfunction pad(n) { return String(n).padStart(2, '0'); }\nfunction isoFromParts(y, m, d) {\n  y = +y; m = +m; d = +d;\n  if (y < 100) y += 2000;\n  if (!(y > 1990 && y < 2100 && m >= 1 && m <= 12 && d >= 1 && d <= 31)) return '';\n  return `${y}-${pad(m)}-${pad(d)}`;\n}\n\n// Parse the many date styles these sources use. order: 'dmy' (India/UN default) or 'mdy' (US sources).\nfunction toISODate(input, order) {\n  if (!input) return '';\n  let s = clean(String(input)).replace(/(\\d)(st|nd|rd|th)\\b/gi, '$1');\n  let m;\n  if ((m = s.match(/\\b(\\d{4})-(\\d{1,2})-(\\d{1,2})/))) return isoFromParts(m[1], m[2], m[3]);\n  if ((m = s.match(/\\b(\\d{1,2})[\\/\\-.](\\d{1,2})[\\/\\-.](\\d{2,4})\\b/))) {\n    return order === 'mdy' ? isoFromParts(m[3], m[1], m[2]) : isoFromParts(m[3], m[2], m[1]);\n  }\n  if ((m = s.match(/\\b(\\d{1,2})[\\s\\-.\\/]+([A-Za-z]{3,9})\\.?,?[\\s\\-.\\/]+(\\d{2,4})\\b/))) {\n    const mo = MONTHS[m[2].toLowerCase()];\n    if (mo) return isoFromParts(m[3], mo, m[1]);\n  }\n  if ((m = s.match(/\\b([A-Za-z]{3,9})\\.?\\s+(\\d{1,2}),?\\s+(\\d{4})\\b/))) {\n    const mo = MONTHS[m[1].toLowerCase()];\n    if (mo) return isoFromParts(m[3], mo, m[2]);\n  }\n  const t = Date.parse(s);\n  if (!isNaN(t)) { const d = new Date(t); return isoFromParts(d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate()); }\n  return '';\n}\n\n// Find a deadline mentioned inside free text (\"Deadline: 10 Oct. 2026\", \"Last date of submission 31-10-2026\").\nfunction deadlineFromText(text, order) {\n  const s = clean(text);\n  const re = /(deadline|last date(?: of submission)?|closing date|closes(?: on)?|apply by|due date|submission date|bid end date|last submission date)\\s*(?:is|:|-|–)?\\s*([^|;]{4,40})/gi;\n  let m;\n  while ((m = re.exec(s))) { const d = toISODate(m[2], order); if (d) return d; }\n  return '';\n}\n\nfunction todayISO() {\n  // Asia/Kolkata date\n  const now = new Date(Date.now() + 5.5 * 3600 * 1000);\n  return isoFromParts(now.getUTCFullYear(), now.getUTCMonth() + 1, now.getUTCDate());\n}\n\nfunction matchCount(text, keywords) {\n  const s = ' ' + String(text || '').toLowerCase() + ' ';\n  let n = 0;\n  for (const k of keywords || []) { if (k && s.includes(String(k).toLowerCase())) n++; }\n  return n;\n}\n\nfunction truthy(v) { return v === true || /^(true|yes|y|1|on)$/i.test(String(v == null ? '' : v).trim()); }\n\nfunction makeUid(o) {\n  if (o.ref_no && String(o.ref_no).replace(/\\W/g, '').length >= 6) return 'R' + fnv(String(o.ref_no).toLowerCase().replace(/\\W/g, ''));\n  if (o.url && !o.url_is_listing) return 'U' + fnv(canonicalUrl(o.url));\n  return 'T' + fnv(titleKey(o.title) + '|' + String(o.funder_buyer || '').toLowerCase());\n}\n\nfunction titleKey(t) { return String(t || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().slice(0, 90); }\n\n// Pull the first JSON object/array out of a model reply (handles ```json fences and <json> tags).\nfunction extractJson(text) {\n  if (!text) return null;\n  let t = String(text);\n  const tag = t.match(/<json>([\\s\\S]*?)<\\/json>/i);\n  if (tag) t = tag[1];\n  t = t.replace(/```(?:json)?/gi, '');\n  const starts = [t.indexOf('{'), t.indexOf('[')].filter(i => i >= 0);\n  if (!starts.length) return null;\n  const start = Math.min(...starts);\n  const end = Math.max(t.lastIndexOf('}'), t.lastIndexOf(']'));\n  if (end <= start) return null;\n  try { return JSON.parse(t.slice(start, end + 1)); } catch (e) { return null; }\n}\n\nfunction claudeText(resp) {\n  if (!resp || !Array.isArray(resp.content)) return '';\n  return resp.content.filter(b => b.type === 'text').map(b => b.text).join('');\n}\n\nfunction cut(s, n) { s = String(s || ''); return s.length > n ? s.slice(0, n - 1) + '…' : s; }\n// ---------- end shared helpers ----------\n\n// One summary row per run, so you can spot broken sources.\nconst cfg = $('Config').first().json;\nfunction safeAll(name) { try { return $(name).isExecuted ? $(name).all() : []; } catch (e) { return []; } }\nconst parsed = [...safeAll('Parse Sources'), ...safeAll('Parse Extracted'), ...safeAll('Parse Web Search')].map(i => i.json);\nconst failed = [...new Set(parsed.filter(j => j.kind === 'error').map(j => `${j.source} (${j.error})`))];\nconst empty = [...new Set(parsed.filter(j => j.kind === 'empty').map(j => j.source))];\nconst collect = safeAll('Collect & Dedupe').map(i => i.json);\nconst stats = (collect.find(j => j.stats) || {}).stats || {};\nconst added = safeAll('Parse Scores').map(i => i.json);\nreturn [{ json: {\n  run_at: new Date(Date.now() + 5.5 * 3600e3).toISOString().replace('T', ' ').slice(0, 16) + ' IST',\n  sources_requested: safeAll('Fetch Sources').filter(i => i.json.src && i.json.src.parser !== 'none').length,\n  sources_failed: failed.length,\n  pages_read_by_claude: safeAll('Build Extract Requests').filter(i => !i.json.skip).length,\n  pages_unchanged: parsed.filter(j => j.kind === 'unchanged').length,\n  web_searches: parsed.filter(j => j.kind === 'searchstats').reduce((a, j) => a + (j.searches || 0), 0),\n  candidates: stats.candidates || 0,\n  new_items: stats.newItems || 0,\n  rows_added: added.length,\n  apply_now: added.filter(r => r.priority === 'Apply').length,\n  crm_inserted: (safeAll('Send to CRM').map(i => i.json).find(j => j.inserted != null) || {}).inserted ?? '',\n  failed_sources: cut(failed.join('; '), 1500),\n  empty_sources: cut(empty.join('; '), 800)\n} }];\n"
+      },
+      "id": "a1b2c3d4-0000-4000-8000-000000000037",
+      "name": "Log Run",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6000,
+        360
+      ],
+      "executeOnce": false
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $('Config').first().json.sheetId }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Run Log",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [],
+          "schema": []
+        },
+        "options": {
+          "cellFormat": "RAW",
+          "handlingExtraData": "ignoreIt"
+        }
+      },
+      "id": "a1b2c3d4-0000-4000-8000-000000000038",
+      "name": "Append Run Log",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        6220,
+        360
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_GOOGLE_SHEETS_CRED",
+          "name": "Google Sheets account"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Daily 6:30 IST": {
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run now": {
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Config": {
+      "main": [
+        [
+          {
+            "node": "Read Profile",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Profile": {
+      "main": [
+        [
+          {
+            "node": "Read Partners",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Partners": {
+      "main": [
+        [
+          {
+            "node": "Read Existing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Existing": {
+      "main": [
+        [
+          {
+            "node": "Read CRM Leads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read CRM Leads": {
+      "main": [
+        [
+          {
+            "node": "Read Sources",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Sources": {
+      "main": [
+        [
+          {
+            "node": "Fetch Sources",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Sources": {
+      "main": [
+        [
+          {
+            "node": "Parse Sources",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Sources": {
+      "main": [
+        [
+          {
+            "node": "Build Extract Requests",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Extract Requests": {
+      "main": [
+        [
+          {
+            "node": "Any pages?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Any pages?": {
+      "main": [
+        [
+          {
+            "node": "Claude: Extract",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Web Search",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claude: Extract": {
+      "main": [
+        [
+          {
+            "node": "Parse Extracted",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Extracted": {
+      "main": [
+        [
+          {
+            "node": "Build Web Search",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Web Search": {
+      "main": [
+        [
+          {
+            "node": "Web search on?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Web search on?": {
+      "main": [
+        [
+          {
+            "node": "Claude: Web Search",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Collect & Dedupe",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claude: Web Search": {
+      "main": [
+        [
+          {
+            "node": "Parse Web Search",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Web Search": {
+      "main": [
+        [
+          {
+            "node": "Collect & Dedupe",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Collect & Dedupe": {
+      "main": [
+        [
+          {
+            "node": "Build Score Batches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Score Batches": {
+      "main": [
+        [
+          {
+            "node": "Anything new?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Anything new?": {
+      "main": [
+        [
+          {
+            "node": "Claude: Score",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claude: Score": {
+      "main": [
+        [
+          {
+            "node": "Parse Scores",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Scores": {
+      "main": [
+        [
+          {
+            "node": "Append Opportunities",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Append Opportunities": {
+      "main": [
+        [
+          {
+            "node": "Build CRM Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build CRM Payload": {
+      "main": [
+        [
+          {
+            "node": "CRM on?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CRM on?": {
+      "main": [
+        [
+          {
+            "node": "Send to CRM",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send to CRM": {
+      "main": [
+        [
+          {
+            "node": "Log Run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Run": {
+      "main": [
+        [
+          {
+            "node": "Append Run Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Kolkata",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "active": false,
+  "tags": []
+}
