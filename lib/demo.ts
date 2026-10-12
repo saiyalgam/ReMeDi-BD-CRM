@@ -5,6 +5,7 @@ import path from 'node:path';
 import raw from './demo-data.json';
 import { normalizeIngestRow } from './leadtype';
 import { todayIST } from './format';
+import { LEAD_DEFAULTS } from './defaults';
 import type { AccessRule, Activity, IngestRun, Lead, Member, NewsFeed, NewsItem } from './types';
 
 interface DemoStore {
@@ -30,7 +31,7 @@ function build(): DemoStore {
     const n = normalizeIngestRow(row, todayIST());
     if (!n.ok) continue;
     const created = `${n.lead.found_on}T03:30:00.000Z`;
-    leads.push({ ...n.lead, id: id++, verification: 'Unverified', verification_note: null, verified_by: null, verified_at: null, stage: 'New', assigned_to: null, assigned_at: null, created_at: created, updated_at: created });
+    leads.push({ ...LEAD_DEFAULTS, ...n.lead, id: id++, created_at: created, updated_at: created } as Lead);
     activity.push({ id: aid++, lead_id: id - 1, actor: null, action: 'created', detail: `Found by the crawler (${n.lead.source || 'unknown source'})`, created_at: created });
   }
   // A few worked examples so every screen has something to show
@@ -40,12 +41,13 @@ function build(): DemoStore {
     Object.assign(l, patch, { updated_at: now });
     if (patch.verification) { l.verified_by = patch.verified_by ?? ME; l.verified_at = now; activity.push({ id: aid++, lead_id: l.id, actor: l.verified_by, action: 'verified', detail: patch.verification + (note ? ': ' + note : ''), created_at: now }); }
     if (patch.assigned_to) { l.assigned_at = now; activity.push({ id: aid++, lead_id: l.id, actor: ME, action: 'assigned', detail: 'Assigned to ' + members.find(m => m.id === patch.assigned_to)!.full_name, created_at: now }); }
+    if (patch.decision) activity.push({ id: aid++, lead_id: l.id, actor: l.decided_by ?? ME, action: 'decision', detail: patch.decision + (patch.decision_reason ? ': ' + patch.decision_reason : ''), created_at: now });
     if (patch.stage && patch.stage !== 'New') activity.push({ id: aid++, lead_id: l.id, actor: l.assigned_to ?? ME, action: 'stage', detail: 'New → ' + patch.stage, created_at: now });
   };
   set('Catalyse Tech', { verification: 'Correct', verification_note: 'ToR read; certification evidence needed', assigned_to: ME, stage: 'Submitted' }, 'ToR read; certification evidence needed');
-  set('MSRTC', { verification: 'Correct', assigned_to: A, stage: 'Preparing', verified_by: A }, 'Checked on mahatenders');
+  set('MSRTC', { verification: 'Correct', assigned_to: A, verified_by: A, decision: 'No-go', decision_reason: 'BOOT model: we fund the set-up and the state reimburses per check-up later; EMD ₹1.52 Cr; needs a funding partner; state payment risk.', decided_by: A, decided_at: now, business_model: 'BOOT / PPP' }, 'Checked on mahatenders');
   set('health camps for construction workers', { verification: 'Correct', assigned_to: B, stage: 'Qualified', verified_by: B });
-  set('MIT Solve', { verification: 'Correct', assigned_to: ME, stage: 'Qualified' });
+  set('MIT Solve', { verification: 'Correct', assigned_to: ME, stage: 'Preparing', decision: 'Go', decision_reason: 'Philips Foundation prize fits POC + teleconsult for maternal and cardiac care.', decided_by: ME, decided_at: now, contact_name: 'Solve team', contact_email: 'challenges@solve.mit.edu', next_followup: todayIST(), pitch_summary: 'ReMeDi kiosks bring 40+ POC tests and teleconsultation to rural primary care.' });
   set('Tele/e-ICUs', { verification: 'Incorrect', verified_by: A }, 'Tele-ICU staffing, not our product');
   set('MRI tele-reporting', { verification: 'Incorrect', verified_by: B }, 'Teleradiology only');
   set('videoconference equipment', { verification: 'Incorrect' }, 'Meeting-room AV');
@@ -71,7 +73,9 @@ export function demo(): DemoStore {
   try {
     const mtime = fs.statSync(FILE).mtimeMs;
     if (cached && cached.mtime === mtime) return cached.store;
-    cached = { mtime, store: JSON.parse(fs.readFileSync(FILE, 'utf8')) as DemoStore };
+    const store = JSON.parse(fs.readFileSync(FILE, 'utf8')) as DemoStore;
+    store.leads = store.leads.map(l => ({ ...LEAD_DEFAULTS, ...l }) as Lead);
+    cached = { mtime, store };
     return cached.store;
   } catch {
     const store = build();

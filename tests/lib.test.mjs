@@ -41,3 +41,28 @@ test('relevance hint favours domain + opportunity words', () => {
   assert.ok(scoreNews('NHM invites tender for telemedicine kiosks') >= 3);
   assert.equal(scoreNews('City marathon draws record crowd'), 0);
 });
+
+test('stripDaysLeft removes stale countdowns', async () => {
+  const { stripDaysLeft } = await import('../lib/leadtype.ts');
+  assert.equal(stripDaysLeft('High EMD; 12 days left.'), 'High EMD.');
+  assert.equal(stripDaysLeft('Lab partner needed (only 5 days left before the deadline)'), 'Lab partner needed');
+  assert.equal(stripDaysLeft('Turnover bar ₹20 Cr'), 'Turnover bar ₹20 Cr');
+});
+
+test('planUpdate: crawler only extends deadlines; reviewed files refresh the assessment', async () => {
+  const { normalizeIngestRow, planUpdate } = await import('../lib/leadtype.ts');
+  const existing = { uid: 'R1', deadline: '2026-10-11', fit_score: 24, priority: 'Skip', eligibility: 'Via partner', rfp_status: 'Requested', decision: 'Undecided' };
+  const row = { uid: 'R1', title: 'WHO LTA', deadline: '2026-10-18', fit_score: 38, priority: 'Watch', eligibility: 'Direct', rfp_status: 'Available', decision: 'No-go', decision_reason: 'Out of scope', source: 'UNGM' };
+  const lead = normalizeIngestRow(row, '2026-10-12').lead;
+  const ins = planUpdate(existing, lead, row, 'insert');
+  assert.equal(ins.deadline, '2026-10-18');
+  assert.match(ins.deadline_note, /2026-10-11 to 2026-10-18/);
+  assert.equal(ins.fit_score, undefined);            // crawler never overwrites a filled field
+  const earlier = planUpdate(existing, normalizeIngestRow({ ...row, deadline: '2026-10-05' }, '2026-10-12').lead, row, 'insert');
+  assert.equal(earlier.deadline, undefined);         // an older listing never pulls the deadline back
+  const up = planUpdate(existing, lead, row, 'update');
+  assert.equal(up.fit_score, 38); assert.equal(up.eligibility, 'Direct'); assert.equal(up.decision, 'No-go');
+  assert.equal(up.rfp_status, undefined);            // the team's "Requested" wins
+  const decided = planUpdate({ ...existing, decision: 'Go' }, lead, row, 'update');
+  assert.equal(decided.decision, undefined);         // never overrides a team decision
+});

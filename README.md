@@ -77,6 +77,32 @@ curl -X POST https://YOUR-APP.vercel.app/api/ingest \
   -d '{"leads":[{"uid":"test-1","title":"Test lead: telemedicine kiosks","category":"Govt Tender - India","deadline":"2026-12-31","fit_score":70}]}'
 ```
 
+## Update 2 (October 2026): team review changes
+
+What changed:
+
+- **Go / No-go** on every lead, separate from Correct / Wrong. A No-go needs a reason. The last 40 reasons (and wrong-lead notes) are sent to the crawler, which applies them when scoring similar leads.
+- **Pursuit card**: RFP documents (Requested / Received), applied date, client contact, next follow-up date and pitch summary. The overview lists follow-ups due this week and the latest No-go reasons.
+- **Edit details** (deadline, deadline note, value, link, reference, summary) and an **Add lead** form for leads found outside the crawler. Every change is written to the lead's history.
+- **Deadline extensions**: when the crawler sees a known lead with a later closing date, it sends the new date; the CRM moves the deadline (never earlier) and notes where it came from.
+- **Assessment fields**: business-only eligibility with the reason, partner needed for scope gaps, business model (Opex / Capex / BOOT), scope type, whether our product is used, device-regulation risk and red flags.
+- Days-left is always computed live; "12 days left" text written by the AI on the day a lead was found is removed.
+
+To install it on a live CRM:
+
+1. Supabase → SQL Editor → run `supabase/update-2.sql` (safe to run twice).
+2. Upload this folder to the same GitHub repository again (Add file → Upload files, drag everything in). Vercel redeploys in about 2 minutes.
+3. Import the new `remedi-opportunity-crawler.json` into n8n, pick the three credentials again on the same nodes as before, copy your `sheetId` and `crmUrl` into Config, click **Publish**, and unpublish or delete the old workflow.
+4. Optional: in the Google Sheet's Opportunities tab, add the new column headers after `notes` (`eligibility_reason` … `red_flags`) so the sheet also keeps them. Run Log gains `crm_updated`.
+
+To load a reviewed JSON file that updates existing leads (it contains `"mode": "update"`):
+
+```
+Invoke-RestMethod -Method Post -Uri "https://YOUR-APP.vercel.app/api/ingest" -Headers @{ Authorization = "Bearer YOUR_INGEST_TOKEN" } -ContentType "application/json; charset=utf-8" -InFile "crm-update-2026-10-12.json"
+```
+
+In update mode the file refreshes scores and assessment fields and sets the deadlines it gives, but it never changes Correct / Wrong, owner, stage, pursuit progress or a Go / No-go the team already made. Sending the same file twice changes nothing.
+
 ## Using it day to day
 
 - **Needs checking:** open each new lead and mark it *Correct* or *Wrong lead*, or use the ✓ / ✕ buttons in the list. Add a reason when it is wrong, such as "construction only" or "NGO-only". This is the data behind the accuracy table.

@@ -1,9 +1,10 @@
 import { daysLeft } from './format';
-import { CLOSED_STAGES, LEAD_TYPES, STAGES, TYPE_SLUGS, VERIFICATIONS, type Lead, type LeadType, type Member, type Stage, type Verification } from './types';
+import { CLOSED_STAGES, DECISIONS, LEAD_TYPES, STAGES, TYPE_SLUGS, VERIFICATIONS, type Decision, type Lead, type LeadType, type Member, type Stage, type Verification } from './types';
 
 export interface LeadFilter {
   type?: LeadType;
   verification?: Verification;
+  decision?: Decision;
   stage?: Stage;
   assignee?: string; // 'me' | 'none' | member id
   priority?: string;
@@ -20,6 +21,7 @@ export function filterFromParams(sp: SP): LeadFilter {
   const f: LeadFilter = {};
   const type = one(sp.type); if (type && TYPE_SLUGS[type]) f.type = TYPE_SLUGS[type];
   const v = one(sp.verification); if (v && (VERIFICATIONS as string[]).includes(v)) f.verification = v as Verification;
+  const dc = one(sp.decision); if (dc && (DECISIONS as string[]).includes(dc)) f.decision = dc as Decision;
   const st = one(sp.stage); if (st && (STAGES as string[]).includes(st)) f.stage = st as Stage;
   const a = one(sp.assignee); if (a) f.assignee = a;
   const p = one(sp.priority); if (p) f.priority = p;
@@ -30,11 +32,12 @@ export function filterFromParams(sp: SP): LeadFilter {
   return f;
 }
 
-/** Still worth working on: not past its deadline, not closed, not marked wrong. */
+/** Still worth working on: not past its deadline, not closed, not marked wrong, not a No-go. */
 export function isOpen(l: Lead, ignoreVerification = false): boolean {
   const d = daysLeft(l.deadline);
   if (d !== null && d < 0) return false;
   if ((CLOSED_STAGES as string[]).includes(l.stage)) return false;
+  if (!ignoreVerification && l.decision === 'No-go') return false;
   if (!ignoreVerification && (l.verification === 'Incorrect' || l.verification === 'Duplicate')) return false;
   return true;
 }
@@ -42,7 +45,8 @@ export function isOpen(l: Lead, ignoreVerification = false): boolean {
 export function filterLeads(leads: Lead[], f: LeadFilter, meId: string): Lead[] {
   const q = (f.q || '').toLowerCase().trim();
   const out = leads.filter(l => {
-    if (f.show !== 'all' && !isOpen(l, !!f.verification)) return false;
+    if (f.show !== 'all' && !isOpen(l, !!f.verification || !!f.decision)) return false;
+    if (f.decision && (l.decision || 'Undecided') !== f.decision) return false;
     if (f.type && l.lead_type !== f.type) return false;
     if (f.verification && l.verification !== f.verification) return false;
     if (f.stage && l.stage !== f.stage) return false;
@@ -103,7 +107,14 @@ export function overview(leads: Lead[], members: Member[]) {
     };
   }).sort((a, b) => b.open - a.open);
 
+  const followUps = leads.filter(l => l.next_followup && !(CLOSED_STAGES as string[]).includes(l.stage) && (daysLeft(l.next_followup) ?? 99) <= 7)
+    .sort((a, b) => String(a.next_followup).localeCompare(String(b.next_followup)));
+  const decisions = { go: leads.filter(l => l.decision === 'Go').length, noGo: leads.filter(l => l.decision === 'No-go').length };
+  const noGoReasons = leads.filter(l => l.decision === 'No-go' && l.decision_reason)
+    .sort((a, b) => String(b.decided_at || '').localeCompare(String(a.decided_at || ''))).slice(0, 6);
+
   return {
+    followUps, decisions, noGoReasons,
     kpi: {
       open: open.length,
       needsCheck: open.filter(l => l.verification === 'Unverified').length,

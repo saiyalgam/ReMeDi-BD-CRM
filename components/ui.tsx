@@ -1,5 +1,5 @@
 import { dueLabel, fmtDate, initials } from '@/lib/format';
-import type { LeadType, Verification } from '@/lib/types';
+import type { Decision, LeadType, Verification } from '@/lib/types';
 
 const V_ICON: Record<Verification, string> = { Correct: '✓', Incorrect: '✕', Duplicate: '⧉', Unverified: '?' };
 const V_LABEL: Record<Verification, string> = { Correct: 'Correct', Incorrect: 'Wrong lead', Duplicate: 'Duplicate', Unverified: 'Not checked' };
@@ -44,4 +44,25 @@ export function Avatar({ name }: { name: string }) {
 
 export function Who({ name }: { name: string }) {
   return name ? <span className="who-inline"><Avatar name={name} />{name}</span> : <span className="muted">Unassigned</span>;
+}
+
+export function DecisionPill({ d }: { d: Decision | null | undefined }) {
+  if (!d || d === 'Undecided') return null;
+  return <span className={`pill d-${d === 'Go' ? 'go' : 'nogo'}`}><span className="ic" aria-hidden="true">{d === 'Go' ? '▶' : '■'}</span>{d}</span>;
+}
+
+/** Small labelled value used in the assessment grid; tone colours High/Missing/BOOT-type risks. */
+export function Tag({ value, tone }: { value: string | null | undefined; tone?: 'bad' | 'warn' | 'ok' }) {
+  if (!value) return <span className="muted">—</span>;
+  return <span className={`tag${tone ? ' ' + tone : ''}`}>{value}</span>;
+}
+
+export function riskTone(field: string, v: string | null | undefined): 'bad' | 'warn' | 'ok' | undefined {
+  if (!v) return undefined;
+  if (field === 'regulatory_risk') return v === 'High' ? 'bad' : v === 'Medium' ? 'warn' : v === 'Low' ? 'ok' : undefined;
+  if (field === 'business_model') return v.startsWith('BOOT') ? 'bad' : v.startsWith('Capex') ? 'warn' : v === 'Opex service' || v === 'Grant' ? 'ok' : undefined;
+  if (field === 'rfp_status') return v === 'Missing' ? 'bad' : v === 'Login needed' || v === 'Requested' ? 'warn' : v === 'Available' || v === 'Received' ? 'ok' : undefined;
+  if (field === 'uses_our_product') return v === 'No' ? 'bad' : v === 'Partly' ? 'warn' : v === 'Yes' ? 'ok' : undefined;
+  if (field === 'eligibility') return v === 'Not eligible' ? 'bad' : v === 'Via partner' || v === 'Check' ? 'warn' : v === 'Direct' ? 'ok' : undefined;
+  return undefined;
 }

@@ -1,10 +1,10 @@
 import Link from 'next/link';
 import { assignAction, verifyAction } from '@/app/actions';
 import { AutoSubmitSelect } from '@/components/AutoSubmit';
-import { Due, Priority, Score, TYPE_COLOR, TypeTag, VerificationPill } from '@/components/ui';
+import { DecisionPill, Due, Priority, Score, TYPE_COLOR, TypeTag, VerificationPill } from '@/components/ui';
 import { getSession, listLeads, listMembers } from '@/lib/data';
 import { filterFromParams, filterLeads, isOpen } from '@/lib/views';
-import { LEAD_TYPES, PRIORITIES, SLUG_OF, STAGES, TYPE_LABEL, VERIFICATIONS, type Lead, type Member } from '@/lib/types';
+import { DECISIONS, LEAD_TYPES, PRIORITIES, SLUG_OF, STAGES, TYPE_LABEL, VERIFICATIONS, type Lead, type Member } from '@/lib/types';
 
 type SP = Promise<Record<string, string | string[] | undefined>>;
 
@@ -32,6 +32,7 @@ export default async function LeadsPage({ searchParams }: { searchParams: SP }) 
           <h1>{title}</h1>
           <p>{rows.length} {rows.length === 1 ? 'lead' : 'leads'}{f.show === 'all' ? ' including closed ones' : ' still open'}. Mark each one correct or wrong so the dashboard can track crawler accuracy.</p>
         </div>
+        <Link className="btn btn-primary" href="/leads/new">+ Add lead</Link>
       </div>
 
       <nav className="tabs" aria-label="Lead type">
@@ -49,6 +50,10 @@ export default async function LeadsPage({ searchParams }: { searchParams: SP }) 
         <select name="verification" defaultValue={f.verification || ''} aria-label="Checked">
           <option value="">Any check status</option>
           {VERIFICATIONS.map(v => <option key={v} value={v}>{v === 'Unverified' ? 'Not checked' : v === 'Incorrect' ? 'Wrong lead' : v}</option>)}
+        </select>
+        <select name="decision" defaultValue={f.decision || ''} aria-label="Decision">
+          <option value="">Any decision</option>
+          {DECISIONS.map(d => <option key={d} value={d}>{d === 'Undecided' ? 'Not decided' : d}</option>)}
         </select>
         <select name="stage" defaultValue={f.stage || ''} aria-label="Stage">
           <option value="">Any stage</option>
@@ -106,11 +111,12 @@ function Row({ lead: l, members }: { lead: Lead; members: Member[] }) {
           {l.country ? <span>{l.country}</span> : null}
           {l.ref_no ? <span className="mono">{l.ref_no}</span> : null}
         </div>
-        <div className="inline"><TypeTag type={l.lead_type} /><Priority p={l.priority} /></div>
+        <div className="inline"><TypeTag type={l.lead_type} /><Priority p={l.priority} />{l.deadline_note && /extend|moved|corrigend|amend|chang|postpon/i.test(l.deadline_note) ? <span className="hint" title={l.deadline_note}>Deadline changed</span> : null}{l.red_flags ? <span className="flag-mini" title={l.red_flags}>⚑ {l.red_flags.split(/;\s*/).length} red flag{l.red_flags.split(/;\s*/).length > 1 ? 's' : ''}</span> : null}</div>
       </div>
       <Due deadline={l.deadline} />
       <div className="st">
         <VerificationPill v={l.verification} />
+        <DecisionPill d={l.decision} />
         <span className="pill">{l.stage}</span>
       </div>
       <div className="acts">

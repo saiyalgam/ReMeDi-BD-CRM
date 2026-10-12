@@ -1,7 +1,7 @@
 import Link from 'next/link';
-import { Due, TYPE_COLOR, VerificationPill, Who } from '@/components/ui';
+import { DecisionPill, Due, TYPE_COLOR, VerificationPill, Who } from '@/components/ui';
 import { getSession, lastIngest, listLeads, listMembers, listNews } from '@/lib/data';
-import { ago, fmtDateTime, nameOf, todayIST, fmtDate } from '@/lib/format';
+import { ago, daysLeft, fmtDateTime, nameOf, todayIST, fmtDate } from '@/lib/format';
 import { overview } from '@/lib/views';
 import { SLUG_OF, TYPE_LABEL, type Verification } from '@/lib/types';
 
@@ -22,7 +22,7 @@ export default async function Overview() {
         <div>
           <div className="eyebrow">{fmtDate(todayIST())}</div>
           <h1>{firstName ? `Desk overview, ${firstName}` : 'Desk overview'}</h1>
-          <p>{run ? <>Last crawler delivery {ago(run.run_at)}: {run.inserted} new of {run.received} sent ({fmtDateTime(run.run_at)} IST).</> : 'The crawler has not sent any leads yet.'}</p>
+          <p>{run ? <>Last crawler delivery {ago(run.run_at)}: {run.inserted} new{run.updated ? `, ${run.updated} updated` : ''} of {run.received} sent ({fmtDateTime(run.run_at)} IST).</> : 'The crawler has not sent any leads yet.'}</p>
         </div>
         <Link className="btn btn-primary" href="/leads?verification=Unverified">Check new leads</Link>
       </div>
@@ -140,6 +140,35 @@ export default async function Overview() {
               ))}
             </tbody>
           </table></div>
+        </section>
+      </div>
+
+      <div className="grid2">
+        <section className="card">
+          <header><div><h2>Follow-ups this week</h2><p>Leads we are pursuing with a follow-up date in the next 7 days or overdue.</p></div><Link href="/leads?decision=Go">{o.decisions.go} Go</Link></header>
+          {o.followUps.length ? (
+            <div className="mini">
+              {o.followUps.slice(0, 8).map(l => {
+                const d = daysLeft(l.next_followup)!;
+                return (
+                  <div key={l.id}>
+                    <div style={{ minWidth: 0 }}><Link href={`/leads/${l.id}`}>{l.title}</Link><div className="by">{[l.contact_name, l.contact_role].filter(Boolean).join(', ') || l.funder_buyer}</div></div>
+                    <span className="dl"><span className="mono">{fmtDate(l.next_followup)}</span><span className={`due ${d <= 0 ? 'urgent' : 'soon'}`}>{d < 0 ? `overdue ${-d} d` : d === 0 ? 'today' : `in ${d} d`}</span></span>
+                    <div className="st"><DecisionPill d={l.decision} /><Who name={nameOf(members, l.assigned_to)} /></div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : <p className="muted">No follow-ups due. Set a follow-up date in the Pursuit card on a lead.</p>}
+        </section>
+
+        <section className="card">
+          <header><div><h2>Why we said No-go</h2><p>Recent reasons. The crawler reads these before scoring new leads.</p></div><Link href="/leads?decision=No-go&show=all">{o.decisions.noGo} No-go</Link></header>
+          {o.noGoReasons.length ? (
+            <ul className="reasons">
+              {o.noGoReasons.map(l => <li key={l.id}><Link href={`/leads/${l.id}`}>{l.title}</Link><span>{l.decision_reason}</span></li>)}
+            </ul>
+          ) : <p className="muted">No No-go decisions yet. On a lead, use “Do we go for it?” and give the reason.</p>}
         </section>
       </div>
 

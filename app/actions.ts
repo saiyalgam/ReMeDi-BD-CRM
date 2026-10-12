@@ -2,7 +2,7 @@
 import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
 import * as data from '@/lib/data';
-import { STAGES, VERIFICATIONS, type Relevance, type Stage, type Verification } from '@/lib/types';
+import { DECISIONS, RFP_STATUSES, STAGES, VERIFICATIONS, type Decision, type Relevance, type Stage, type Verification } from '@/lib/types';
 
 const str = (fd: FormData, k: string) => String(fd.get(k) ?? '').trim();
 const done = () => revalidatePath('/', 'layout');
@@ -29,6 +29,69 @@ export async function stageAction(fd: FormData) {
   if (!id || !(STAGES as string[]).includes(stage)) return;
   await data.updateLead(id, { stage });
   done();
+}
+
+const ISO = /^\d{4}-\d{2}-\d{2}$/;
+const dateOrNull = (v: string) => (ISO.test(v) ? v : null);
+const back = (id: number, msg: string, err = false) => redirect(`/leads/${id}?${err ? 'err' : 'msg'}=${encodeURIComponent(msg)}`);
+
+export async function decisionAction(fd: FormData) {
+  const id = Number(str(fd, 'id'));
+  const decision = str(fd, 'decision') as Decision;
+  if (!id || !(DECISIONS as string[]).includes(decision)) return;
+  const reason = str(fd, 'reason').slice(0, 1000) || null;
+  if (decision === 'No-go' && !reason) back(id, 'Please write why it is a No-go. The crawler learns from these reasons.', true);
+  await data.updateLead(id, { decision, decision_reason: decision === 'Undecided' ? null : reason });
+  done();
+  back(id, decision === 'Undecided' ? 'Decision cleared.' : `Saved: ${decision}.`);
+}
+
+export async function detailsAction(fd: FormData) {
+  const id = Number(str(fd, 'id'));
+  if (!id) return;
+  const title = str(fd, 'title').slice(0, 500);
+  if (!title) back(id, 'The title cannot be empty.', true);
+  const url = str(fd, 'url');
+  if (url && !/^https?:\/\/\S+$/i.test(url)) back(id, 'The link must start with https://', true);
+  await data.updateLead(id, {
+    title, funder_buyer: str(fd, 'funder_buyer') || null, country: str(fd, 'country') || null,
+    deadline: dateOrNull(str(fd, 'deadline')), deadline_note: str(fd, 'deadline_note').slice(0, 300) || null,
+    amount: str(fd, 'amount') || null, ref_no: str(fd, 'ref_no') || null, url: url || null, summary: str(fd, 'summary').slice(0, 2000) || null
+  });
+  done();
+  back(id, 'Details saved.');
+}
+
+export async function pursuitAction(fd: FormData) {
+  const id = Number(str(fd, 'id'));
+  if (!id) return;
+  const rfp = str(fd, 'rfp_status');
+  const email = str(fd, 'contact_email');
+  if (email && !/^[^@\s]+@[^@\s]+\.[a-z]{2,}$/i.test(email)) back(id, 'Check the contact email.', true);
+  await data.updateLead(id, {
+    rfp_status: RFP_STATUSES.includes(rfp) ? rfp : 'Unknown',
+    applied_on: dateOrNull(str(fd, 'applied_on')), next_followup: dateOrNull(str(fd, 'next_followup')),
+    contact_name: str(fd, 'contact_name') || null, contact_role: str(fd, 'contact_role') || null,
+    contact_email: email || null, contact_phone: str(fd, 'contact_phone') || null,
+    pitch_summary: str(fd, 'pitch_summary').slice(0, 3000) || null
+  });
+  done();
+  back(id, 'Pursuit details saved.');
+}
+
+export async function createLeadAction(fd: FormData) {
+  let id = 0, err = '';
+  try {
+    id = await data.createLead({
+      title: str(fd, 'title'), lead_type: str(fd, 'lead_type'), category: str(fd, 'category'),
+      funder_buyer: str(fd, 'funder_buyer'), country: str(fd, 'country'), deadline: str(fd, 'deadline'),
+      amount: str(fd, 'amount'), ref_no: str(fd, 'ref_no'), url: str(fd, 'url'), summary: str(fd, 'summary'),
+      source: str(fd, 'source'), rfp_status: str(fd, 'url') ? 'Available' : 'Unknown'
+    });
+  } catch (e) { err = (e as Error).message; }
+  done();
+  if (err) redirect('/leads/new?err=' + encodeURIComponent(err));
+  redirect(`/leads/${id}?msg=` + encodeURIComponent('Lead added. Check it and pick an owner.'));
 }
 
 export async function commentAction(fd: FormData) {

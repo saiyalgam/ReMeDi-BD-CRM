@@ -5,9 +5,10 @@ import { supabaseServer } from './supabase/server';
 import { supabaseAdmin } from './supabase/admin';
 import { demo, DEMO_ME, saveDemo } from './demo';
 import { fetchFeeds } from './news';
-import { normalizeIngestRow, type IngestLead } from './leadtype';
+import { normalizeIngestRow, planUpdate, sameNotice, titleKey, type IngestLead } from './leadtype';
 import { todayIST } from './format';
-import type { AccessRule, Activity, IngestRun, Lead, Member, NewsFeed, NewsItem, Relevance, Session, Stage, Verification } from './types';
+import { LEAD_DEFAULTS } from './defaults';
+import type { AccessRule, Activity, Decision, IngestRun, Lead, Member, NewsFeed, NewsItem, Relevance, Session, Stage, Verification } from './types';
 
 export class NotAllowed extends Error {}
 
@@ -98,12 +99,23 @@ export async function lastIngest(): Promise<IngestRun | null> {
 }
 
 // ---------------- writes (team) ----------------
-export interface LeadPatch { verification?: Verification; verification_note?: string | null; stage?: Stage; assigned_to?: string | null }
+// Fields a team member may edit on the lead page (history rows are written by the database trigger).
+export const DETAIL_FIELDS = ['title', 'funder_buyer', 'country', 'deadline', 'deadline_note', 'amount', 'ref_no', 'url', 'summary'] as const;
+export const PURSUIT_FIELDS = ['rfp_status', 'applied_on', 'pitch_summary', 'contact_name', 'contact_role', 'contact_email', 'contact_phone', 'next_followup'] as const;
+export interface LeadPatch {
+  verification?: Verification; verification_note?: string | null; stage?: Stage; assigned_to?: string | null;
+  decision?: Decision; decision_reason?: string | null;
+  [field: string]: unknown;
+}
+
+const LABEL: Record<string, string> = { title: 'title', funder_buyer: 'buyer', country: 'country', amount: 'value', ref_no: 'reference', url: 'link', summary: 'summary', deadline_note: 'deadline note' };
 
 export async function updateLead(id: number, patch: LeadPatch): Promise<void> {
   const s = await requireMember();
   if (isDemo()) {
     const st = demo(); const l = st.leads.find(x => x.id === id); if (!l) return;
+    Object.assign(l, { ...LEAD_DEFAULTS, ...l });
+    const r = l as unknown as Record<string, unknown>;
     const now = new Date().toISOString();
     const log = (action: Activity['action'], detail: string) => st.activity.push({ id: st.activity.length + 1, lead_id: id, actor: s.user.id, action, detail, created_at: now });
     if (patch.verification !== undefined && patch.verification !== l.verification) {
@@ -117,12 +129,43 @@ export async function updateLead(id: number, patch: LeadPatch): Promise<void> {
       log('assigned', who ? 'Assigned to ' + (who.full_name || who.email) : 'Unassigned');
     }
     if (patch.stage !== undefined && patch.stage !== l.stage) { log('stage', `${l.stage} → ${patch.stage}`); l.stage = patch.stage; }
+    if (patch.decision !== undefined && (patch.decision !== l.decision || (patch.decision_reason ?? null) !== l.decision_reason)) {
+      l.decision = patch.decision; l.decision_reason = (patch.decision_reason as string | null) ?? null; l.decided_by = s.user.id; l.decided_at = now;
+      log('decision', l.decision + (l.decision_reason ? ': ' + l.decision_reason : ''));
+    }
+    const edits: string[] = [];
+    for (const k of DETAIL_FIELDS) if (k in patch && (patch[k] ?? null) !== (r[k] ?? null)) {
+      edits.push(k === 'deadline' ? `Deadline ${l.deadline || 'none'} → ${patch[k] || 'none'}` : LABEL[k]!);
+      r[k] = patch[k] ?? null;
+    }
+    if (edits.length) log('edited', edits.join('; '));
+    const pur: string[] = [];
+    for (const k of PURSUIT_FIELDS) if (k in patch && (patch[k] ?? null) !== (r[k] ?? null)) { pur.push(k.replace(/_/g, ' ')); r[k] = patch[k] ?? null; }
+    if (pur.length) log('pursuit', 'Updated ' + pur.join(', '));
     l.updated_at = now;
     saveDemo();
     return;
   }
   const sb = await supabaseServer();
   check(await sb.from('leads').update(patch).eq('id', id).select('id'));
+}
+
+/** A lead someone heard about outside the crawler (WhatsApp, a client, GeM). */
+export async function createLead(row: Record<string, unknown>): Promise<number> {
+  const s = await requireMember();
+  const uid = 'M-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  const n = normalizeIngestRow({ ...row, uid, origin: 'manual', source: row.source || `Added by ${s.user.full_name || s.user.email}` }, todayIST());
+  if (!n.ok) throw new Error(n.reason === 'missing title' ? 'Give the lead a title.' : n.reason);
+  if (isDemo()) {
+    const st = demo(); const now = new Date().toISOString(); const id = st.nextId++;
+    st.leads.push({ ...LEAD_DEFAULTS, ...n.lead, id, created_at: now, updated_at: now } as Lead);
+    st.activity.push({ id: st.activity.length + 1, lead_id: id, actor: s.user.id, action: 'created', detail: 'Added by hand', created_at: now });
+    saveDemo(st);
+    return id;
+  }
+  const sb = await supabaseServer();
+  const rows = check(await sb.from('leads').insert(n.lead).select('id')) as { id: number }[];
+  return rows[0]!.id;
 }
 
 export async function addComment(id: number, textIn: string): Promise<void> {
@@ -191,41 +234,87 @@ export async function removeFeed(id: number): Promise<void> {
 }
 
 // ---------------- jobs (crawler ingest, daily news) ----------------
-/** Insert new crawler leads; existing uids are left untouched so the team's edits are never overwritten. */
-export async function ingestLeads(rows: unknown[], note?: string): Promise<{ received: number; valid: number; inserted: number; rejected: { index: number; reason: string }[] }> {
+export interface IngestResult { received: number; valid: number; inserted: number; updated: number; unchanged: number; rejected: { index: number; reason: string }[] }
+
+/**
+ * Crawler deliveries and reviewed JSON files.
+ * New uids are inserted. A lead that already exists (same uid, or the same title under another id) is never
+ * duplicated; instead planUpdate() decides what may change, so the team's own fields are never overwritten.
+ */
+export async function ingestLeads(rows: unknown[], note?: string, mode: 'insert' | 'update' = 'insert'): Promise<IngestResult> {
   const today = todayIST();
-  const valid: IngestLead[] = [];
+  const valid: { lead: IngestLead; row: Record<string, unknown> }[] = [];
   const rejected: { index: number; reason: string }[] = [];
-  rows.forEach((r, i) => { const n = normalizeIngestRow(r as Record<string, unknown>, today); if (n.ok) valid.push(n.lead); else rejected.push({ index: i, reason: n.reason }); });
-  const unique = [...new Map(valid.map(l => [l.uid, l])).values()];
-  let inserted = 0;
+  rows.forEach((r, i) => { const n = normalizeIngestRow(r as Record<string, unknown>, today); if (n.ok) valid.push({ lead: n.lead, row: r as Record<string, unknown> }); else rejected.push({ index: i, reason: n.reason }); });
+  const unique = [...new Map(valid.map(v => [v.lead.uid, v])).values()];
+  let inserted = 0, updated = 0, unchanged = 0;
+
+  const existing: Record<string, unknown>[] = isDemo()
+    ? (demo().leads as unknown as Record<string, unknown>[])
+    : (check(await supabaseAdmin().from('leads').select('*').limit(20000)) as Record<string, unknown>[]);
+  const byUid = new Map(existing.map(e => [String(e.uid), e]));
+  const byTitle = new Map<string, Record<string, unknown>[]>();
+  const addTitle = (e: Record<string, unknown>) => { const k = titleKey(e.title); if (k.length >= 25) byTitle.set(k, [...(byTitle.get(k) || []), e]); };
+  existing.forEach(addTitle);
+
+  const toInsert: IngestLead[] = [];
+  const toUpdate: { id: number; patch: Record<string, unknown> }[] = [];
+  for (const { lead, row } of unique) {
+    const cand = byTitle.get(titleKey(lead.title)) || [];
+    const match = byUid.get(lead.uid) || cand.find(e => sameNotice(e, lead as unknown as Record<string, unknown>));
+    if (!match) { toInsert.push(lead); addTitle(lead as unknown as Record<string, unknown>); continue; }
+    const patch = planUpdate(match, lead, row, mode);
+    if (Object.keys(patch).length) toUpdate.push({ id: Number(match.id), patch }); else unchanged++;
+  }
+
   if (isDemo()) {
-    const st = demo();
-    for (const l of unique) {
-      if (st.leads.some(x => x.uid === l.uid)) continue;
-      const now = new Date().toISOString();
-      st.leads.push({ ...l, id: st.nextId++, verification: 'Unverified', verification_note: null, verified_by: null, verified_at: null, stage: 'New', assigned_to: null, assigned_at: null, created_at: now, updated_at: now });
-      st.activity.push({ id: st.activity.length + 1, lead_id: st.nextId - 1, actor: null, action: 'created', detail: `Found by the crawler (${l.source || 'unknown source'})`, created_at: now });
+    const st = demo(); const now = new Date().toISOString();
+    for (const l of toInsert) {
+      const id = st.nextId++;
+      st.leads.push({ ...LEAD_DEFAULTS, ...l, id, created_at: now, updated_at: now } as Lead);
+      st.activity.push({ id: st.activity.length + 1, lead_id: id, actor: null, action: 'created', detail: l.origin === 'manual' ? 'Added by hand' : `Found by the crawler (${l.source || 'unknown source'})`, created_at: now });
       inserted++;
     }
-    st.runs.unshift({ id: st.runs.length + 1, run_at: new Date().toISOString(), received: rows.length, inserted, note: note || null });
+    for (const u of toUpdate) {
+      const l = st.leads.find(x => x.id === u.id) as unknown as Record<string, unknown>; if (!l) continue;
+      const bits = Object.keys(u.patch).filter(k => k !== 'deadline_note').map(k => k === 'deadline' ? `Deadline ${l.deadline || 'none'} → ${u.patch.deadline}` : k.replace(/_/g, ' '));
+      Object.assign(l, u.patch, { updated_at: now });
+      if (u.patch.decision) st.activity.push({ id: st.activity.length + 1, lead_id: u.id, actor: null, action: 'decision', detail: `${u.patch.decision}${u.patch.decision_reason ? ': ' + u.patch.decision_reason : ''}`, created_at: now });
+      st.activity.push({ id: st.activity.length + 1, lead_id: u.id, actor: null, action: 'updated', detail: bits.filter(b => !b.startsWith('decision')).join('; ') || 'Assessment refreshed', created_at: now });
+      updated++;
+    }
+    st.runs.unshift({ id: st.runs.length + 1, run_at: now, received: rows.length, inserted, updated, note: note || null });
     saveDemo(st);
   } else {
     const sb = supabaseAdmin();
-    for (let i = 0; i < unique.length; i += 200) {
-      const res = await sb.from('leads').upsert(unique.slice(i, i + 200), { onConflict: 'uid', ignoreDuplicates: true }).select('id');
+    for (let i = 0; i < toInsert.length; i += 200) {
+      const res = await sb.from('leads').upsert(toInsert.slice(i, i + 200), { onConflict: 'uid', ignoreDuplicates: true }).select('id');
       inserted += check(res)?.length || 0;
     }
-    await sb.from('ingest_runs').insert({ received: rows.length, inserted, note: note || null });
+    for (const u of toUpdate) { check(await sb.from('leads').update(u.patch).eq('id', u.id).select('id')); updated++; }
+    await sb.from('ingest_runs').insert({ received: rows.length, inserted, updated, note: note || null });
   }
-  return { received: rows.length, valid: unique.length, inserted, rejected };
+  return { received: rows.length, valid: unique.length, inserted, updated, unchanged, rejected };
 }
 
-export async function knownLeadKeys(): Promise<{ uids: string[]; titles: string[] }> {
-  if (isDemo()) return { uids: demo().leads.map(l => l.uid), titles: demo().leads.map(l => l.title) };
-  const sb = supabaseAdmin();
-  const rows = check(await sb.from('leads').select('uid,title').limit(20000)) as { uid: string; title: string }[];
-  return { uids: rows.map(r => r.uid), titles: rows.map(r => r.title) };
+export interface Lesson { title: string; category: string; verdict: string; reason: string }
+
+/** What the crawler needs before it scores: leads already known (to skip) and the team's verdicts (to learn from). */
+export async function knownLeadKeys(): Promise<{ uids: string[]; titles: string[]; deadlines: Record<string, string>; lessons: Lesson[] }> {
+  const rows = (isDemo() ? demo().leads : check(await supabaseAdmin().from('leads').select('uid,title,category,deadline,verification,verification_note,decision,decision_reason,updated_at').limit(20000))) as Lead[];
+  const lessons: Lesson[] = rows
+    .map(l => (l.decision && l.decision !== 'Undecided' && l.decision_reason) ? { l, verdict: l.decision === 'Go' ? 'Team said GO' : 'Team said NO-GO', reason: l.decision_reason }
+      : (l.verification === 'Incorrect' || l.verification === 'Duplicate') && l.verification_note ? { l, verdict: l.verification === 'Incorrect' ? 'Team marked WRONG LEAD' : 'Team marked DUPLICATE', reason: l.verification_note } : null)
+    .filter((x): x is { l: Lead; verdict: string; reason: string } => !!x)
+    .sort((a, b) => String(b.l.updated_at || '').localeCompare(String(a.l.updated_at || '')))
+    .slice(0, 40)
+    .map(x => ({ title: x.l.title, category: x.l.category, verdict: x.verdict, reason: x.reason }));
+  return {
+    uids: rows.map(r => r.uid),
+    titles: rows.map(r => r.title),
+    deadlines: Object.fromEntries(rows.filter(r => r.deadline).map(r => [r.uid, String(r.deadline).slice(0, 10)])),
+    lessons
+  };
 }
 
 /** Pull every active feed into news_items. Used by the daily cron and the "Fetch news now" button. */

@@ -15,6 +15,15 @@ export const CLOSED_STAGES: Stage[] = ['Won', 'Lost', 'Dropped'];
 
 export const PRIORITIES = ['Apply', 'Consider', 'Watch', 'Skip', 'Review'];
 
+// Do we go for it? Separate from "is the lead correct?" (a correct lead can still be a No-go).
+export type Decision = 'Undecided' | 'Go' | 'No-go';
+export const DECISIONS: Decision[] = ['Undecided', 'Go', 'No-go'];
+
+// RFP / tender documents: the crawler sets Available / Missing / Login needed; the team moves it to Requested / Received.
+export const RFP_STATUSES = ['Unknown', 'Available', 'Missing', 'Login needed', 'Requested', 'Received'];
+export const BUSINESS_MODELS = ['Opex service', 'Capex supply', 'Capex + O&M', 'BOOT / PPP', 'Grant', 'Unknown'];
+export const SCOPE_TYPES = ['POC + telemedicine', 'Screening / camps', 'Mobile medical unit', 'Devices supply', 'Hospital supplies', 'Software / IT', 'Research / consulting', 'Funding call', 'Unknown'];
+
 export type Relevance = 'Unreviewed' | 'Relevant' | 'Not relevant';
 
 export interface Lead {
@@ -46,6 +55,31 @@ export interface Lead {
   stage: Stage;
   assigned_to: string | null;
   assigned_at: string | null;
+  // assessment (crawler / AI, editable)
+  deadline_note: string | null;
+  rfp_status: string | null;
+  eligibility_reason: string | null;
+  scope_gaps: string | null;
+  scope_type: string | null;
+  uses_our_product: string | null;
+  business_model: string | null;
+  business_model_note: string | null;
+  regulatory_risk: string | null;
+  regulatory_note: string | null;
+  red_flags: string | null;
+  // go / no-go
+  decision: Decision;
+  decision_reason: string | null;
+  decided_by: string | null;
+  decided_at: string | null;
+  // pursuit
+  applied_on: string | null;
+  pitch_summary: string | null;
+  contact_name: string | null;
+  contact_role: string | null;
+  contact_email: string | null;
+  contact_phone: string | null;
+  next_followup: string | null;
   found_on: string;
   origin: string;
   created_at: string;
@@ -63,7 +97,7 @@ export interface Activity {
   id: number;
   lead_id: number;
   actor: string | null;
-  action: 'created' | 'verified' | 'assigned' | 'stage' | 'comment';
+  action: 'created' | 'verified' | 'assigned' | 'stage' | 'comment' | 'decision' | 'edited' | 'pursuit' | 'updated';
   detail: string | null;
   created_at: string;
 }
@@ -86,7 +120,7 @@ export interface NewsItem {
 
 export interface NewsFeed { id: number; name: string; url: string; topic: string | null; active: boolean }
 export interface AccessRule { pattern: string; note: string | null }
-export interface IngestRun { id: number; run_at: string; received: number; inserted: number; note: string | null }
+export interface IngestRun { id: number; run_at: string; received: number; inserted: number; updated?: number | null; note: string | null }
 
 export interface Session {
   user: Member;
