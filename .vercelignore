@@ -1,0 +1,6 @@
+# Not part of the website: keep Vercel from treating the project as a Python app
+scripts/
+*.py
+requirements.txt
+crm-*.json
+starting-leads.json
