@@ -252,7 +252,8 @@ export async function createLead(row: Record<string, unknown>, extra: Partial<Le
     return id;
   }
   const sb = await supabaseServer();
-  const rows = check(await sb.from('leads').insert({ ...n.lead, ...extra }).select('id')) as { id: number }[];
+  // rfp_status is NOT NULL in the database; a spreadsheet row or a manual lead usually has none.
+  const rows = check(await sb.from('leads').insert({ ...n.lead, rfp_status: n.lead.rfp_status ?? 'Unknown', ...extra }).select('id')) as { id: number }[];
   return rows[0]!.id;
 }
 
@@ -409,7 +410,7 @@ export async function ingestLeads(rows: unknown[], note?: string, mode: 'insert'
   } else {
     const sb = supabaseAdmin();
     for (let i = 0; i < toInsert.length; i += 200) {
-      const res = await sb.from('leads').upsert(toInsert.slice(i, i + 200), { onConflict: 'uid', ignoreDuplicates: true }).select('id');
+      const res = await sb.from('leads').upsert(toInsert.slice(i, i + 200).map(l => ({ ...l, rfp_status: l.rfp_status ?? 'Unknown' })), { onConflict: 'uid', ignoreDuplicates: true }).select('id');
       inserted += check(res)?.length || 0;
     }
     for (const u of toUpdate) { check(await sb.from('leads').update(u.patch).eq('id', u.id).select('id')); updated++; }
