@@ -1,231 +1,167 @@
 import Link from 'next/link';
+import { ExportMenu } from '@/components/Export';
 import { notFound } from 'next/navigation';
-import { assignAction, commentAction, decisionAction, detailsAction, pursuitAction, stageAction, verifyAction } from '@/app/actions';
-import { Avatar, DecisionPill, Due, Priority, Score, Tag, TypeTag, VerificationPill, Who, riskTone } from '@/components/ui';
-import { getLead, listMembers } from '@/lib/data';
-import { daysLeft, fmtDate, fmtDateTime, nameOf } from '@/lib/format';
-import { stripDaysLeft } from '@/lib/leadtype';
-import { DECISIONS, RFP_STATUSES, STAGES, VERIFICATIONS, type Activity, type Decision, type Verification } from '@/lib/types';
-
-const V_TEXT: Record<Verification, string> = { Unverified: 'Not checked', Correct: 'Correct lead', Incorrect: 'Wrong lead', Duplicate: 'Duplicate' };
-const D_TEXT: Record<Decision, string> = { Undecided: 'Not decided', Go: 'Go: we pursue it', 'No-go': 'No-go: we skip it' };
-const ACT_TEXT: Record<Activity['action'], string> = {
-  comment: 'added a note', created: 'added this lead', verified: 'checked it', assigned: 'changed the owner', stage: 'moved the stage',
-  decision: 'decided', edited: 'edited the details', pursuit: 'updated the pursuit', updated: 'updated it'
-};
+import { assignAction, claimLeadAction, stageAction, verifyAction } from '@/app/actions';
+import { DecisionPill, Denied, Due, EligibilityPill, Notes, Ref, Score, TypeTag, VerificationPill, Who } from '@/components/ui';
+import { getLead, getSession, listMembers } from '@/lib/data';
+import { listDeadlines, listDocRequests, listDocs, listLeadPartners, listRequirements, listTasks } from '@/lib/data-ext';
+import { fmtDate, nameOf } from '@/lib/format';
+import { can } from '@/lib/perm';
+import { CLOSED_STAGES, STAGES, VERIFICATIONS } from '@/lib/types';
+import { ActivityTab, AssessmentTab, DecisionTab, DocumentsTab, EligibilityTab, OverviewTab, PartnersTab, ProposalTab, SourceTab, TasksTab } from './tabs';
 
 type SP = Promise<Record<string, string | string[] | undefined>>;
+const TABS = [
+  ['overview', 'Overview'], ['source', 'Source & amendments'], ['eligibility', 'Eligibility'], ['assessment', 'Fit & risk'], ['decision', 'Go / No-go'],
+  ['partners', 'Partners'], ['documents', 'Documents'], ['tasks', 'Tasks'], ['proposal', 'Proposal'], ['activity', 'Activity']
+] as const;
+export type TabKey = typeof TABS[number][0];
+
+export async function generateMetadata({ params }: { params: Promise<{ id: string }> }) {
+  const res = await getLead(Number((await params).id));
+  return { title: res ? `${res.lead.ref_code} ${res.lead.title.slice(0, 40)}` : 'Opportunity' };
+}
 
 export default async function LeadPage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: SP }) {
   const { id } = await params;
   const sp = await searchParams;
-  const msg = typeof sp.msg === 'string' ? sp.msg : '';
-  const err = typeof sp.err === 'string' ? sp.err : '';
-  const [res, members] = await Promise.all([getLead(Number(id)), listMembers()]);
+  const tab = (TABS.find(t => t[0] === sp.tab)?.[0] || 'overview') as TabKey;
+  const leadId = Number(id);
+  const [res, members, session, deadlines, reqs, docs, requests, tasks, links] = await Promise.all([
+    getLead(leadId), listMembers(), getSession(), listDeadlines(leadId), listRequirements(leadId), listDocs(leadId), listDocRequests(leadId), listTasks(), listLeadPartners()
+  ]);
   if (!res) notFound();
   const { lead: l, activity } = res;
-  const fd = daysLeft(l.next_followup);
-  const follow = fd === null ? null : fd < 0 ? { text: `overdue by ${-fd} d`, tone: 'urgent' } : fd === 0 ? { text: 'today', tone: 'urgent' } : { text: `in ${fd} d`, tone: fd <= 3 ? 'soon' : 'normal' };
-
-  const facts: [string, React.ReactNode][] = [
-    ['Deadline', <span key="d" style={{ display: 'grid', gap: 2 }}><Due deadline={l.deadline} />{l.deadline_note ? <span className="muted" style={{ fontSize: 12.5 }}>{l.deadline_note}</span> : null}</span>],
-    ['Value', l.amount || '—'],
-    ['Reference', l.ref_no ? <span className="mono">{l.ref_no}</span> : '—'],
-    ['Country / state', l.country || '—'],
-    ['RFP documents', <Tag key="r" value={l.rfp_status && l.rfp_status !== 'Unknown' ? l.rfp_status : null} tone={riskTone('rfp_status', l.rfp_status)} />],
-    ['Category', l.category],
-    ['Source', l.source || '—'],
-    ['Found on', fmtDate(l.found_on)]
-  ];
-
-  const assess: [string, React.ReactNode, string | null][] = [
-    ['Business eligibility', <Tag key="e" value={l.eligibility} tone={riskTone('eligibility', l.eligibility)} />, l.eligibility_reason],
-    ['Partner for scope', <Tag key="p" value={l.partner_needed} />, [l.scope_gaps && `Gaps: ${l.scope_gaps}`, l.suggested_partner && `Partner: ${l.suggested_partner}`].filter(Boolean).join(' · ') || null],
-    ['Business model', <Tag key="b" value={l.business_model} tone={riskTone('business_model', l.business_model)} />, l.business_model_note],
-    ['Scope', <Tag key="s" value={l.scope_type} />, l.uses_our_product ? `Uses our product: ${l.uses_our_product}` : null],
-    ['Device regulation', <Tag key="g" value={l.regulatory_risk} tone={riskTone('regulatory_risk', l.regulatory_risk)} />, l.regulatory_note]
-  ];
-  const hasAssessment = assess.some(([, , note], i) => note || [l.eligibility, l.partner_needed, l.business_model, l.scope_type, l.regulatory_risk][i]);
-  const risks = stripDaysLeft(l.risks);
+  const s = session!;
+  const pendingAmend = deadlines.filter(d => d.kind === 'Amendment' && !d.verified && !d.rejected);
+  const lastVerified = deadlines.find(d => d.kind === 'Amendment' && d.verified);
+  const openReqs = reqs.filter(r => r.status === 'Needs clarification' || (r.status === 'Not assessed' && r.necessity !== 'Optional'));
+  const missingDocs = docs.filter(d => d.status === 'Missing' || d.status === 'Login needed' || d.status === 'Requested');
+  const leadTasks = tasks.filter(t => t.lead_id === leadId);
+  const openTasks = leadTasks.filter(t => t.status === 'Open' || t.status === 'In progress');
+  const stageIdx = STAGES.indexOf(l.stage);
+  const closed = (CLOSED_STAGES as string[]).includes(l.stage);
+  const counts: Partial<Record<TabKey, [number, string]>> = {
+    source: [pendingAmend.length, 'warn'], eligibility: [openReqs.length, 'warn'], documents: [missingDocs.length, 'bad'],
+    tasks: [openTasks.length, ''], partners: [links.filter(x => x.lead_id === leadId).length, ''], decision: [l.approval_status === 'Pending' ? 1 : 0, 'warn']
+  };
+  const canAssign = l.assigned_to ? can(s, 'opp.reassign') : can(s, 'opp.assign');
 
   return (
     <>
-      <div id="top">
-        <Link href="/leads" className="muted" style={{ fontSize: 13 }}>← All leads</Link>
-      </div>
-      {msg ? <div className="note ok" role="status">{msg}</div> : null}
-      {err ? <div className="note err" role="alert">{err}</div> : null}
-      <div className="phead">
-        <div style={{ display: 'flex', gap: 14, alignItems: 'flex-start', minWidth: 0 }}>
-          <Score value={l.fit_score} />
-          <div style={{ minWidth: 0 }}>
-            <div className="inline" style={{ marginBottom: 6 }}><TypeTag type={l.lead_type} /><VerificationPill v={l.verification} /><DecisionPill d={l.decision} /><span className="pill">{l.stage}</span><Priority p={l.priority} /></div>
-            <h1 style={{ fontSize: 'clamp(20px, 2.4vw, 26px)', overflowWrap: 'anywhere' }}>{l.title}</h1>
-            <p>{[l.funder_buyer, l.country].filter(Boolean).join(' · ')}</p>
+      <nav aria-label="Breadcrumb" className="muted" style={{ fontSize: 12.5 }}><Link href="/">Dashboard</Link> / <Link href="/leads">Pipeline</Link> / <span className="ref">{l.ref_code}</span></nav>
+      <Notes sp={sp} />
+
+      <section className="rechead" aria-labelledby="opp-title">
+        <div className="top">
+          <div style={{ display: 'grid', gap: 6, minWidth: 0, flex: '1 1 520px' }}>
+            <div className="inline"><Ref code={l.ref_code} big /><TypeTag type={l.lead_type} /><span className="badge b-out">{l.origin === 'crawler' ? 'Source: crawler' : 'Source: manual / import'}</span>{l.duplicate_of ? <Link className="badge b-neu" href={`/leads/${l.duplicate_of}`}>⧉ Duplicate — open original</Link> : null}</div>
+            <h1 id="opp-title">{l.title}</h1>
+            <span className="muted">{[l.funder_buyer, l.country, l.category].filter(Boolean).join(' · ')}</span>
+          </div>
+          <div className="inline" style={{ alignItems: 'center' }}>
+            <Score value={l.fit_score} />
+            <ExportMenu kind="opportunity" id={l.id} canExport={can(s, 'opp.export')} label="Export record" csvSheets={['Summary', 'Eligibility', 'Risks', 'Scorecard', 'Deadlines', 'Documents', 'Document requests', 'Partners', 'Tasks', 'History']} />
+            {l.url ? <a className="btn" href={l.url} target="_blank" rel="noopener noreferrer">Open notice ↗</a> : null}
+            <Link className="btn btn-primary" href={`/leads/${l.id}?tab=${l.verification === 'Unverified' ? 'overview' : l.eligibility_status === 'Not assessed' || l.eligibility_status === 'Needs clarification' ? 'eligibility' : 'decision'}`}>
+              {l.verification === 'Unverified' ? 'Verify lead' : l.eligibility_status === 'Not assessed' || l.eligibility_status === 'Needs clarification' ? 'Review eligibility' : l.approval_status === 'Pending' && can(s, 'decision.approve') ? 'Approve decision' : 'Go / No-go'}
+            </Link>
           </div>
         </div>
-        {l.url ? <a className="btn" href={l.url} target="_blank" rel="noopener noreferrer">Open notice ↗</a> : null}
-      </div>
+        <dl className="meta">
+          <div><dt>Current deadline</dt><dd><Due deadline={l.deadline} />
+            <span className="sub">{lastVerified ? <>↻ Amended (was {fmtDate(lastVerified.previous)}) · {lastVerified.source}</> : l.deadline ? 'Original deadline' : 'No deadline stated'}</span>
+            {pendingAmend.length ? <Link href={`/leads/${l.id}?tab=source`} className="flag f-amd">↻ {pendingAmend.length} change{pendingAmend.length > 1 ? 's' : ''} to verify</Link> : null}</dd></div>
+          <div><dt>Value</dt><dd>{l.value_band || l.amount || '—'}<span className="sub">{l.value_band && l.amount ? l.amount : l.amount ? 'As stated in the source' : 'Not estimated'}</span></dd></div>
+          <div><dt>Owner</dt><dd><Who name={nameOf(members, l.assigned_to)} /><span className="sub">{l.assigned_at ? `since ${fmtDate(l.assigned_at)}` : 'Nobody owns it yet'}</span></dd></div>
+          <div><dt>Stage</dt><dd>{l.stage}<span className="sub">{closed ? 'Closed' : `Step ${stageIdx + 1} of 7 active stages`}</span></dd></div>
+        </dl>
+        <div className="dims" aria-label="Decision fields (separate)">
+          <div className="dim"><span>Lead verification</span><VerificationPill v={l.verification} /><span className="by">{l.verified_at ? `${nameOf(members, l.verified_by) || 'someone'}, ${fmtDate(l.verified_at)}` : 'Not checked yet'}</span></div>
+          <div className="dim"><span>Eligibility</span><EligibilityPill e={l.eligibility_status} /><span className="by">{l.eligibility_at ? `${nameOf(members, l.eligibility_by)}, ${fmtDate(l.eligibility_at)}` : `${openReqs.length} open requirement${openReqs.length === 1 ? '' : 's'}`}</span></div>
+          <div className="dim"><span>Pursuit decision</span><DecisionPill d={l.decision} approval={l.approval_status} always /><span className="by">{l.decided_at && l.decision !== 'Undecided' ? `${nameOf(members, l.decided_by)}, ${fmtDate(l.decided_at)}` : l.approval_status === 'Returned' ? 'Returned for changes' : 'Separate from eligibility'}</span></div>
+          <div className="dim"><span>Partner need</span><span className={`badge ${l.partner_need === 'Required by tender' ? 'b-info' : l.partner_need === 'Unclear' ? 'b-q' : 'b-out'}`}>{l.partner_need}</span><span className="by">{l.partner_need === 'Not indicated' ? 'Tender does not require one' : 'See Partners tab'}</span></div>
+        </div>
+        <ol className="stepper" aria-label={`Stage: ${l.stage}`}>
+          {STAGES.slice(0, 7).map((st, i) => (
+            <li key={st} style={{ display: 'contents' }}>
+              {i ? <span className="sep" aria-hidden="true" /> : null}
+              <span className={`s${i < stageIdx && !closed ? ' done' : ''}${st === l.stage ? ' cur' : ''}`} aria-current={st === l.stage ? 'step' : undefined}><i>{i < stageIdx && !closed ? '✓' : i + 1}</i>{st}</span>
+            </li>
+          ))}
+          <li style={{ display: 'contents' }}><span className="sep" aria-hidden="true" /><span className={`s${closed ? ' cur closed' : ''}`}><i>✓</i>{closed ? l.stage : 'Outcome'}</span></li>
+        </ol>
+      </section>
 
-      <div className="detail">
-        <div style={{ display: 'grid', gap: 18, minWidth: 0 }}>
-          <section className="card">
-            <dl className="facts">{facts.map(([k, v]) => <div key={k}><dt>{k}</dt><dd>{v}</dd></div>)}</dl>
-          </section>
+      <nav className="rtabs" aria-label="Opportunity sections">
+        {TABS.map(([k, label]) => {
+          const c = counts[k];
+          return <Link key={k} className="rtab" href={`/leads/${l.id}?tab=${k}`} aria-current={tab === k ? 'page' : undefined}>{label}{c && c[0] ? <span className={`c ${c[1]}`}>{c[0]}</span> : null}</Link>;
+        })}
+      </nav>
 
-          {l.red_flags ? (
-            <section className="card flags" aria-label="Red flags">
-              <h3>Red flags</h3>
-              <ul>{l.red_flags.split(/;\s*/).filter(Boolean).map(f => <li key={f}>{f}</li>)}</ul>
-            </section>
-          ) : null}
-
-          {hasAssessment ? (
-            <section className="card">
-              <header><div><h2>Assessment</h2><p>Eligibility here is business only (registration, turnover, EMD, experience). Gaps in what we can deliver are under “Partner for scope”.</p></div></header>
-              <dl className="assess">
-                {assess.map(([k, v, note]) => <div key={k}><dt>{k}</dt><dd>{v}{note ? <span className="note-line">{note}</span> : null}</dd></div>)}
-              </dl>
-            </section>
-          ) : null}
-
-          <section className="card prose">
-            {l.why_fit ? <div><h3>Why it fits</h3><p>{stripDaysLeft(l.why_fit)}</p></div> : null}
-            {risks ? <div><h3>Risks</h3><p>{risks}</p></div> : null}
-            {l.next_step ? <div><h3>Next step</h3><p>{stripDaysLeft(l.next_step)}</p></div> : null}
-            {l.summary ? <div><h3>Summary from the source</h3><p>{l.summary}</p></div> : null}
-            {!l.why_fit && !risks && !l.summary ? <p className="muted">No notes for this lead yet.</p> : null}
-          </section>
-
-          <section className="card">
-            <header><h2>Activity</h2></header>
-            <form action={commentAction} style={{ display: 'grid', gap: 8 }}>
-              <input type="hidden" name="id" value={l.id} />
-              <textarea name="comment" placeholder="Add a note: who you spoke to, what the client said, what the RFP asks for…" aria-label="Comment" required />
-              <div><button className="btn btn-primary" type="submit">Add note</button></div>
-            </form>
-            <ol className="timeline">
-              {activity.map(a => {
-                const who = a.actor ? nameOf(members, a.actor) : 'Crawler / import';
-                return (
-                  <li key={a.id}>
-                    <Avatar name={who} />
-                    <div>
-                      <div><b>{who}</b> {ACT_TEXT[a.action] || a.action}<span className="when"> · {fmtDateTime(a.created_at)}</span></div>
-                      {a.action === 'comment' ? <div className="comment">{a.detail}</div> : <div className="muted" style={{ fontSize: 13 }}>{a.detail}</div>}
-                    </div>
-                  </li>
-                );
-              })}
-            </ol>
-          </section>
+      <div className={`detail${['eligibility', 'assessment', 'documents', 'tasks'].includes(tab) ? ' wide' : ''}`}>
+        <div style={{ display: 'grid', gap: 18, minWidth: 0, alignContent: 'start' }}>
+          {tab === 'overview' ? <OverviewTab lead={l} session={s} members={members} openReqs={openReqs.length} missingDocs={missingDocs.length} pendingAmend={pendingAmend.length} openTasks={openTasks.length} /> : null}
+          {tab === 'source' ? <SourceTab lead={l} session={s} members={members} deadlines={deadlines} /> : null}
+          {tab === 'eligibility' ? <EligibilityTab lead={l} session={s} members={members} reqs={reqs} selected={Number(sp.req) || null} /> : null}
+          {tab === 'assessment' ? <AssessmentTab lead={l} session={s} members={members} /> : null}
+          {tab === 'decision' ? <DecisionTab lead={l} session={s} members={members} reqs={reqs} activity={activity} /> : null}
+          {tab === 'partners' ? <PartnersTab lead={l} session={s} reqs={reqs} links={links.filter(x => x.lead_id === leadId)} /> : null}
+          {tab === 'documents' ? <DocumentsTab lead={l} session={s} members={members} docs={docs} requests={requests} /> : null}
+          {tab === 'tasks' ? <TasksTab lead={l} session={s} members={members} tasks={leadTasks} /> : null}
+          {tab === 'proposal' ? <ProposalTab lead={l} session={s} reqs={reqs} /> : null}
+          {tab === 'activity' ? <ActivityTab lead={l} session={s} members={members} activity={activity} /> : null}
         </div>
 
-        <aside className="side">
+        <aside className="side" aria-label="Quick actions">
           <section className="card">
-            <header><div><h2>Is this lead correct?</h2><p>{l.verified_at ? <>Last checked by {nameOf(members, l.verified_by) || 'someone'} on {fmtDate(l.verified_at)}</> : 'Nobody has checked it yet.'}</p></div></header>
-            <form action={verifyAction} style={{ display: 'grid', gap: 10 }} key={l.verification + (l.verification_note || '')}>
-              <input type="hidden" name="id" value={l.id} />
-              <div className="radios" role="radiogroup" aria-label="Check result">
-                {VERIFICATIONS.map(v => (
-                  <label key={v}><input type="radio" name="verification" value={v} defaultChecked={l.verification === v} />{V_TEXT[v]}</label>
-                ))}
-              </div>
-              <label className="fld">Why (optional)
-                <input type="text" name="note" defaultValue={l.verification_note || ''} placeholder="e.g. checked on GeM, scope is lab-only" />
-              </label>
-              <div><button className="btn btn-primary" type="submit">Save check</button></div>
-            </form>
-          </section>
-
-          <section className="card">
-            <header><div><h2>Do we go for it?</h2><p>{l.decided_at && l.decision !== 'Undecided' ? <>Decided by {nameOf(members, l.decided_by) || 'the team'} on {fmtDate(l.decided_at)}</> : 'A correct lead can still be a No-go. Reasons teach the crawler.'}</p></div></header>
-            <form action={decisionAction} style={{ display: 'grid', gap: 10 }} key={l.decision + (l.decision_reason || '')}>
-              <input type="hidden" name="id" value={l.id} />
-              <div className="radios" role="radiogroup" aria-label="Decision">
-                {DECISIONS.map(d => (
-                  <label key={d}><input type="radio" name="decision" value={d} defaultChecked={l.decision === d} />{D_TEXT[d]}</label>
-                ))}
-              </div>
-              <label className="fld">Reason (required for No-go)
-                <textarea name="reason" defaultValue={l.decision_reason || ''} rows={3} placeholder="e.g. BOOT model: we fund vans upfront; EMD too high; state pays late" />
-              </label>
-              <div><button className="btn btn-primary" type="submit">Save decision</button></div>
-            </form>
-          </section>
-
-          <section className="card">
-            <header><div><h2>Owner</h2><p>{l.assigned_at ? <>Assigned {fmtDate(l.assigned_at)}</> : 'Pick who will work on it.'}</p></div></header>
-            <div><Who name={nameOf(members, l.assigned_to)} /></div>
-            <form action={assignAction} className="inline">
-              <input type="hidden" name="id" value={l.id} />
-              <select name="assigned_to" defaultValue={l.assigned_to || ''} aria-label="Assign to" key={l.assigned_to || 'none'}>
-                <option value="">Unassigned</option>
-                {members.map(m => <option key={m.id} value={m.id}>{m.full_name || m.email}</option>)}
-              </select>
-              <button className="btn" type="submit">Assign</button>
-            </form>
-          </section>
-
-          <section className="card">
-            <header><h2>Stage</h2></header>
-            <form action={stageAction} className="inline">
-              <input type="hidden" name="id" value={l.id} />
-              <select name="stage" defaultValue={l.stage} aria-label="Stage" key={l.stage}>
-                {STAGES.map(s => <option key={s} value={s}>{s}</option>)}
-              </select>
-              <button className="btn" type="submit">Update</button>
-            </form>
-          </section>
-
-          <section className="card">
-            <header><div><h2>Pursuit</h2><p>{follow ? <>Next follow-up {fmtDate(l.next_followup)} · <span className={`due ${follow.tone}`}>{follow.text}</span></> : 'Applied date, client contact, pitch and follow-ups.'}</p></div></header>
-            <form action={pursuitAction} className="stack" key={l.updated_at}>
-              <input type="hidden" name="id" value={l.id} />
-              <div className="two">
-                <label className="fld">RFP documents
-                  <select name="rfp_status" defaultValue={l.rfp_status || 'Unknown'}>{RFP_STATUSES.map(r => <option key={r} value={r}>{r}</option>)}</select>
-                </label>
-                <label className="fld">Applied on<input type="date" name="applied_on" defaultValue={l.applied_on || ''} /></label>
-              </div>
-              <div className="two">
-                <label className="fld">Client contact<input type="text" name="contact_name" defaultValue={l.contact_name || ''} placeholder="Name" /></label>
-                <label className="fld">Role<input type="text" name="contact_role" defaultValue={l.contact_role || ''} placeholder="e.g. State NHM, procurement" /></label>
-              </div>
-              <div className="two">
-                <label className="fld">Email<input type="email" name="contact_email" defaultValue={l.contact_email || ''} /></label>
-                <label className="fld">Phone<input type="tel" name="contact_phone" defaultValue={l.contact_phone || ''} /></label>
-              </div>
-              <label className="fld">Next follow-up<input type="date" name="next_followup" defaultValue={l.next_followup || ''} /></label>
-              <label className="fld">Pitch summary
-                <textarea name="pitch_summary" rows={4} defaultValue={l.pitch_summary || ''} placeholder="What we proposed: solution, price, partners, differentiators" />
-              </label>
-              <p className="muted" style={{ fontSize: 12.5, margin: 0 }}>Log each conversation as a note under Activity.</p>
-              <div><button className="btn btn-primary" type="submit">Save pursuit</button></div>
-            </form>
-          </section>
-
-          <section className="card">
-            <details>
-              <summary><b>Edit details</b> <span className="muted">deadline, value, link…</span></summary>
-              <form action={detailsAction} className="stack" style={{ marginTop: 12 }} key={l.updated_at}>
-                <input type="hidden" name="id" value={l.id} />
-                <label className="fld">Title<input type="text" name="title" defaultValue={l.title} required /></label>
-                <div className="two">
-                  <label className="fld">Deadline<input type="date" name="deadline" defaultValue={l.deadline?.slice(0, 10) || ''} /></label>
-                  <label className="fld">Value<input type="text" name="amount" defaultValue={l.amount || ''} /></label>
+            <header><div><h2>Is the lead correct?</h2><p>Real and relevant enough to review — not whether we should bid.</p></div></header>
+            {can(s, 'opp.verify') ? (
+              <form action={verifyAction} style={{ display: 'grid', gap: 10 }} key={l.verification + (l.verification_note || '')}>
+                <input type="hidden" name="id" value={l.id} /><input type="hidden" name="return" value={`/leads/${l.id}?tab=${tab}`} />
+                <div className="radios" role="radiogroup" aria-label="Lead verification">
+                  {VERIFICATIONS.map(v => <label key={v}><input type="radio" name="verification" value={v} defaultChecked={l.verification === v} />{v}</label>)}
                 </div>
-                <label className="fld">Deadline note<input type="text" name="deadline_note" defaultValue={l.deadline_note || ''} placeholder="e.g. Extended to 18 Oct by corrigendum 2" /></label>
-                <div className="two">
-                  <label className="fld">Buyer / funder<input type="text" name="funder_buyer" defaultValue={l.funder_buyer || ''} /></label>
-                  <label className="fld">Country / state<input type="text" name="country" defaultValue={l.country || ''} /></label>
-                </div>
-                <label className="fld">Reference<input type="text" name="ref_no" defaultValue={l.ref_no || ''} /></label>
-                <label className="fld">Link<input type="url" name="url" defaultValue={l.url || ''} placeholder="https://" /></label>
-                <label className="fld">Summary<textarea name="summary" rows={3} defaultValue={l.summary || ''} /></label>
-                <div><button className="btn btn-primary" type="submit">Save details</button></div>
+                <label className="fld">Why <span className="hint-text">(required for Incorrect / Duplicate)</span><input type="text" name="note" defaultValue={l.verification_note || ''} placeholder="e.g. checked on GeM; scope is lab-only" /></label>
+                <div><button className="btn btn-primary" type="submit">Save check</button></div>
               </form>
-            </details>
+            ) : <Denied>Your role cannot change verification.</Denied>}
+          </section>
+
+          <section className="card">
+            <header><div><h2>Owner</h2><p>{l.assigned_to ? `${nameOf(members, l.assigned_to)} owns this.` : 'Available — nobody owns it yet.'}</p></div></header>
+            {canAssign ? (
+              <form action={assignAction} className="inline">
+                <input type="hidden" name="id" value={l.id} /><input type="hidden" name="return" value={`/leads/${l.id}?tab=${tab}`} />
+                <select name="assigned_to" defaultValue={l.assigned_to || ''} aria-label="Owner" key={l.assigned_to || 'none'}>
+                  <option value="">Unassigned</option>{members.map(m => <option key={m.id} value={m.id}>{m.full_name || m.email}{m.org_role ? ` (${m.org_role})` : ''}</option>)}
+                </select>
+                <button className="btn" type="submit">{l.assigned_to ? 'Reassign' : 'Assign'}</button>
+              </form>
+            ) : !l.assigned_to && can(s, 'opp.claim') ? (
+              <form action={claimLeadAction}><input type="hidden" name="id" value={l.id} /><input type="hidden" name="return" value={`/leads/${l.id}?tab=${tab}`} /><button className="btn btn-primary" type="submit">Take this opportunity</button></form>
+            ) : l.assigned_to === s.user.id ? (
+              <form action={assignAction}><input type="hidden" name="id" value={l.id} /><input type="hidden" name="assigned_to" value="" /><input type="hidden" name="return" value={`/leads/${l.id}?tab=${tab}`} /><button className="btn" type="submit">Give it back</button></form>
+            ) : <Denied>{l.assigned_to ? 'Your role cannot move work between people (an open policy question).' : 'Your role cannot assign this.'}</Denied>}
+          </section>
+
+          <section className="card">
+            <header><div><h2>Stage</h2><p>In preparation needs an approved Go.</p></div></header>
+            {can(s, 'opp.edit') ? (
+              <form action={stageAction} className="inline">
+                <input type="hidden" name="id" value={l.id} /><input type="hidden" name="return" value={`/leads/${l.id}?tab=${tab}`} />
+                <select name="stage" defaultValue={l.stage} aria-label="Stage" key={l.stage}>{STAGES.map(st => <option key={st} value={st}>{st}</option>)}</select>
+                <button className="btn" type="submit">Update</button>
+              </form>
+            ) : <Denied>Your role cannot change the stage.</Denied>}
+          </section>
+
+          <section className="card">
+            <header><div><h2>Go / No-go</h2></div><Link href={`/leads/${l.id}?tab=decision`}>Open</Link></header>
+            <div className="inline"><DecisionPill d={l.decision} approval={l.approval_status} always /></div>
+            {l.decision_reason ? <p style={{ margin: 0, fontSize: 13.5 }}>{l.decision_reason}</p> : null}
+            {l.approval_status === 'Pending' ? <p className="muted" style={{ margin: 0, fontSize: 13 }}>{nameOf(members, l.recommended_by)} recommended <b>{l.recommended_decision}</b>{l.recommended_at ? ` on ${fmtDate(l.recommended_at)}` : ''}.</p> : null}
           </section>
         </aside>
       </div>

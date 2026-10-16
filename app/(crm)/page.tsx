@@ -1,189 +1,192 @@
 import Link from 'next/link';
-import { DecisionPill, Due, TYPE_COLOR, VerificationPill, Who } from '@/components/ui';
-import { getSession, lastIngest, listLeads, listMembers, listNews } from '@/lib/data';
-import { ago, daysLeft, fmtDateTime, nameOf, todayIST, fmtDate } from '@/lib/format';
-import { overview } from '@/lib/views';
-import { SLUG_OF, TYPE_LABEL, type Verification } from '@/lib/types';
+import { can } from '@/lib/perm';
+import { ExportMenu } from '@/components/Export';
+import { Avatar, DecisionPill, Due, Empty, FollowUp, Ref, TypeTag, Who } from '@/components/ui';
+import { getSession, lastIngest, listActivity, listLeads, listMembers } from '@/lib/data';
+import { listDeadlines, listDocs, listRelationships, listRequirements, listTasks } from '@/lib/data-ext';
+import { ago, daysLeft, fmtDate, fmtDateTime, nameOf, todayIST } from '@/lib/format';
+import { dashboard, overview } from '@/lib/views';
+import type { Activity } from '@/lib/types';
 
-const V_COLOR: Record<Verification, string> = { Correct: 'var(--good)', Incorrect: 'var(--critical)', Duplicate: 'var(--serious)', Unverified: 'var(--neutral-mark)' };
-const V_NAME: Record<Verification, string> = { Correct: 'Correct', Incorrect: 'Wrong lead', Duplicate: 'Duplicate', Unverified: 'Not checked' };
-const pct = (x: number | null) => (x == null ? '–' : Math.round(x * 100) + '%');
+export const metadata = { title: 'Dashboard' };
 
-export default async function Overview() {
-  const [session, leads, members, news, run] = await Promise.all([getSession(), listLeads(), listMembers(), listNews(), lastIngest()]);
-  const o = overview(leads, members);
-  const maxStage = Math.max(1, ...o.pipeline.map(p => p.count));
-  const toReview = news.filter(n => n.relevance === 'Unreviewed').sort((a, b) => b.auto_score - a.auto_score).slice(0, 5);
+const ACT: Record<string, string> = {
+  comment: 'added a note on', created: 'added', verified: 'checked', assigned: 'changed the owner of', stage: 'moved', decision: 'decided on',
+  edited: 'edited', pursuit: 'updated the proposal on', updated: 'refreshed', eligibility: 'assessed eligibility of', recommendation: 'recommended a decision on',
+  approval: 'reviewed the decision on', requirement: 'updated a requirement on', risk: 'assessed risk on', score: 'scored', deadline: 'recorded a deadline on',
+  document: 'updated documents on', request: 'drafted a document request on', task: 'updated a task on', partner: 'updated partners on', merge: 'merged', meeting: 'prepared a meeting on'
+};
+
+export default async function Dashboard() {
+  const [session, leads, members, run, tasks, deadlines, docs, reqs, activity, rels] = await Promise.all([
+    getSession(), listLeads(), listMembers(), lastIngest(), listTasks(), listDeadlines(), listDocs(), listRequirements(), listActivity(60), listRelationships()
+  ]);
+  const d = dashboard(leads, members, tasks, deadlines, docs, reqs, activity);
+  const o = overview(leads);
+  const byId = new Map(leads.map(l => [l.id, l]));
   const firstName = (session?.user.full_name || '').split(' ')[0];
+  const hour = new Date(Date.now() + 5.5 * 3600e3).getUTCHours();
+  const greet = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
+  const maxFunnel = Math.max(1, ...d.funnel.map(f => f.n));
+  const maxWeek = Math.max(1, ...d.weeks.map(w => w.count));
+  const myRels = rels.filter(r => r.owner === session?.user.id && r.status !== 'Closed')
+    .sort((a, b) => String(a.next_followup || '9999').localeCompare(String(b.next_followup || '9999'))).slice(0, 5);
+  const needYou = d.attention.filter(a => a.lead.approval_status === 'Pending').length;
 
   return (
     <>
       <div className="phead">
         <div>
           <div className="eyebrow">{fmtDate(todayIST())}</div>
-          <h1>{firstName ? `Desk overview, ${firstName}` : 'Desk overview'}</h1>
-          <p>{run ? <>Last crawler delivery {ago(run.run_at)}: {run.inserted} new{run.updated ? `, ${run.updated} updated` : ''} of {run.received} sent ({fmtDateTime(run.run_at)} IST).</> : 'The crawler has not sent any leads yet.'}</p>
+          <h1>{greet}{firstName ? `, ${firstName}` : ''}.</h1>
+          <p>{d.attention.length ? <>{d.attention.length} {d.attention.length === 1 ? 'opportunity needs' : 'opportunities need'} attention{needYou ? <>, {needYou} waiting for an approval decision</> : null}.</> : 'Nothing urgent needs a decision right now.'}
+            {' '}{run ? <>Last crawler delivery {ago(run.run_at)} ({run.inserted} new{run.updated ? `, ${run.updated} updated` : ''}).</> : 'The crawler has not sent any leads yet.'}</p>
         </div>
-        <Link className="btn btn-primary" href="/leads?verification=Unverified">Check new leads</Link>
+        <div className="inline">
+          <ExportMenu kind="pipeline" params={{ show: 'open' }} canExport={can(session, 'opp.export')} label="Export / print" />
+          <Link className="btn" href="/review">Open review queue</Link>
+          <Link className="btn btn-primary" href="/leads/new">+ Add opportunity</Link>
+        </div>
       </div>
 
-      <section className="kpis" aria-label="Summary">
-        <Link className="kpi" href="/leads"><small>Open leads</small><b className="num">{o.kpi.open}</b><span className="sub">not closed or marked wrong</span></Link>
-        <Link className="kpi" href="/leads?verification=Unverified"><small>Need checking</small><b className="num">{o.kpi.needsCheck}</b><span className="sub">correct or not?</span></Link>
-        <Link className="kpi" href="/leads?assignee=none"><small>Unassigned</small><b className="num">{o.kpi.unassigned}</b><span className="sub">open leads with no owner</span></Link>
-        <Link className="kpi" href="/leads?due=7"><small>Closing in 7 days</small><b className="num">{o.kpi.due7}</b><span className="sub">open leads</span></Link>
-        <div className="kpi">
-          <small>Lead accuracy</small>
-          <b className="num">{pct(o.kpi.accuracy)}</b>
-          <div className="meter" role="img" aria-label={`${o.kpi.correct} of ${o.kpi.reviewed} checked leads were correct`}>
-            {o.kpi.reviewed ? <><i style={{ width: `${(o.kpi.correct / o.kpi.reviewed) * 100}%`, background: 'var(--good)' }} /><i style={{ flex: 1, background: 'var(--critical)' }} /></> : null}
-          </div>
-          <span className="sub">{o.kpi.correct} correct of {o.kpi.reviewed} checked</span>
-        </div>
+      <section className="kpis" aria-label="Pipeline summary">
+        <Link className="kpi" href="/leads"><small>Active opportunities</small><b className="num">{d.kpi.active}</b><span className="sub">Open, not wrong, not No-go</span></Link>
+        <Link className="kpi" href="/leads?type=tender,rfp&stage=Partnering,In+preparation"><small>Tenders / RFPs in preparation</small><b className="num">{d.kpi.tendersPrep}</b><span className="sub">Partnering or preparing</span></Link>
+        <Link className="kpi" href="/leads?type=grant,csr&stage=Partnering,In+preparation"><small>Grants / CSR in preparation</small><b className="num">{d.kpi.grantsPrep}</b><span className="sub">Partnering or preparing</span></Link>
+        <Link className="kpi focus" href="/leads?review=1"><small>Under review</small><b className="num">{d.kpi.underReview}</b><span className="sub">{d.kpi.unverified} not yet verified · screening or considering</span></Link>
+        <Link className="kpi" href="/leads?approval=pending"><small>Decisions awaiting approval</small><b className="num">{d.kpi.pendingApproval}</b><span className="sub">Go / No-go recommended</span></Link>
+        <Link className="kpi" href="/leads?due=14"><small>Deadlines in 14 days</small><b className="num">{d.kpi.upcoming}</b><span className="sub">Open opportunities</span></Link>
+        <Link className={`kpi${d.kpi.overdue ? ' alert' : ''}`} href="/leads?due=overdue"><small>Overdue</small><b className="num">{d.kpi.overdue}</b><span className="sub">Deadline passed before submission</span></Link>
+        <Link className="kpi" href="/leads?stage=Submitted,Clarification&show=all"><small>Submitted · won · lost</small><b className="num">{d.kpi.submitted}<span style={{ fontSize: 18, color: 'var(--muted)' }}> · {d.kpi.won} · {d.kpi.lost}</span></b><span className="sub">{d.kpi.submittedMonth} applied this month</span></Link>
       </section>
 
-      <div className="grid-3-2">
-        <section className="card">
-          <header><div><h2>Leads by type</h2><p>Open and rolling leads, split by whether someone has checked them.</p></div></header>
-          <div className="sbars">
-            {o.byType.map(t => (
-              <Link key={t.type} className="sbar" href={`/leads?type=${SLUG_OF[t.type]}`} title={`${TYPE_LABEL[t.type]}: ${(['Correct', 'Unverified', 'Duplicate', 'Incorrect'] as Verification[]).map(v => `${t.counts[v]} ${V_NAME[v].toLowerCase()}`).join(', ')}`}>
-                <span className="name"><i style={{ background: TYPE_COLOR[t.type] }} aria-hidden="true" />{TYPE_LABEL[t.type]}</span>
-                <span className="track">
-                  {(['Correct', 'Unverified', 'Duplicate', 'Incorrect'] as Verification[]).filter(v => t.counts[v] > 0).map(v => (
-                    <span key={v} style={{ flex: t.counts[v], background: V_COLOR[v] }} />
-                  ))}
-                  {t.total === 0 ? <span style={{ flex: 1, background: 'var(--neutral-soft)' }} /> : null}
-                </span>
-                <span className="total">{t.total}</span>
-              </Link>
-            ))}
-          </div>
-          <div className="legend">
-            {(['Correct', 'Unverified', 'Duplicate', 'Incorrect'] as Verification[]).map(v => <span key={v}><i style={{ background: V_COLOR[v] }} />{V_NAME[v]}</span>)}
-          </div>
-        </section>
-
-        <section className="card">
-          <header><div><h2>Pipeline</h2><p>Every lead not marked wrong, by stage.</p></div></header>
-          <div className="hbars">
-            {o.pipeline.map(p => (
-              <div key={p.stage} className="hbar" title={`${p.stage}: ${p.count}`}>
-                <span>{p.stage}</span>
-                <span className="track"><span style={{ width: `${(p.count / maxStage) * 100}%` }} /></span>
-                <b>{p.count}</b>
-              </div>
-            ))}
-          </div>
-        </section>
-      </div>
-
-      <section className="card">
+      <section className="card" aria-labelledby="att-h">
         <header>
-          <div><h2>Is the crawler finding the right leads?</h2><p>Share of checked leads marked correct, by source. Mark leads correct or wrong to fill this in.</p></div>
+          <div><h2 id="att-h">Needs your attention</h2><p>Approvals first, then by deadline. Each row says why it is here and what to do next.</p></div>
+          <Link href="/review">Full review queue</Link>
         </header>
-        <div className="tbl-wrap">
-          <table className="tbl">
-            <thead><tr><th>Source</th><th className="r">Found</th><th className="r">Checked</th><th className="r">Correct</th><th className="r">Wrong / duplicate</th><th style={{ minWidth: 170 }}>Accuracy</th></tr></thead>
-            <tbody>
-              {o.bySource.slice(0, 12).map(s => (
-                <tr key={s.source}>
-                  <td>{s.source}</td>
-                  <td className="r">{s.total}</td>
-                  <td className="r">{s.reviewed}</td>
-                  <td className="r">{s.correct}</td>
-                  <td className="r">{s.wrong}</td>
-                  <td>
-                    {s.accuracy == null ? <span className="muted">Not checked yet</span> : (
-                      <span className="acc" title={`${s.correct} of ${s.reviewed} correct`}>
-                        <span className="meter"><i style={{ width: `${s.accuracy * 100}%`, background: 'var(--good)' }} /><i style={{ flex: 1, background: s.wrong ? 'var(--critical)' : 'transparent' }} /></span>
-                        <b className="num">{pct(s.accuracy)}</b>
-                      </span>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        {d.attention.length ? (
+          <div className="att">
+            {d.attention.map(({ lead: l, why }) => {
+              const action = l.approval_status === 'Pending' ? ['Review decision', `/leads/${l.id}?tab=decision`]
+                : why.some(w => w.startsWith('Deadline amendment')) ? ['Verify deadline', `/leads/${l.id}?tab=source`]
+                  : why.some(w => w.startsWith('Eligibility')) ? ['Open review', `/leads/${l.id}?tab=eligibility`]
+                    : why.includes('No owner') ? ['Assign owner', `/leads/${l.id}`]
+                      : why.some(w => w.startsWith('Tender documents')) ? ['See documents', `/leads/${l.id}?tab=documents`] : ['Open', `/leads/${l.id}`];
+              return (
+                <div key={l.id}>
+                  <div style={{ minWidth: 0, display: 'grid', gap: 3 }}>
+                    <Ref code={l.ref_code} />
+                    <Link className="t" href={`/leads/${l.id}`}>{l.title}</Link>
+                    <span className="muted" style={{ fontSize: 12.5 }}>{[l.funder_buyer, l.country].filter(Boolean).join(' · ')}</span>
+                    <span className="inline"><TypeTag type={l.lead_type} />{l.amount || l.value_band ? <span className="muted" style={{ fontSize: 12.5 }}>{l.value_band || l.amount}</span> : null}</span>
+                  </div>
+                  <Due deadline={l.deadline} note={l.deadline_note} />
+                  <div className="why">{why.map(w => <span key={w} className={`badge ${/approval/.test(w) ? 'b-info' : /passed|missing/i.test(w) ? 'b-bad' : /clarification|verify|amendment/i.test(w) ? 'b-q' : 'b-warn'}`}>{w}</span>)}</div>
+                  <div><Who name={nameOf(members, l.assigned_to)} /></div>
+                  <div className="acts"><Link className={`btn btn-sm${l.approval_status === 'Pending' ? ' btn-primary' : ''}`} href={action[1]!}>{action[0]} →</Link></div>
+                </div>
+              );
+            })}
+          </div>
+        ) : <Empty title="Nothing needs attention">New crawler leads appear under Crawler intake.</Empty>}
       </section>
 
-      <div className="grid2">
-        <section className="card">
-          <header><div><h2>Closing in the next 14 days</h2><p>Open leads, soonest first.</p></div><Link href="/leads?due=14">See all</Link></header>
-          {o.closingSoon.length ? (
-            <div className="mini">
-              {o.closingSoon.slice(0, 8).map(l => (
-                <div key={l.id}>
-                  <div style={{ minWidth: 0 }}><Link href={`/leads/${l.id}`}>{l.title}</Link><div className="by">{l.funder_buyer}</div></div>
-                  <Due deadline={l.deadline} />
-                  <div className="st"><VerificationPill v={l.verification} /><Who name={nameOf(members, l.assigned_to)} /></div>
-                </div>
-              ))}
-            </div>
-          ) : <p className="muted">Nothing closes in the next two weeks.</p>}
-        </section>
-
-        <section className="card">
-          <header><div><h2>Team workload</h2><p>Open leads assigned to each person.</p></div><Link href="/leads?assignee=none">{o.unassignedOpen} unassigned</Link></header>
-          <div className="tbl-wrap"><table className="tbl">
-            <thead><tr><th>Person</th><th className="r">Open</th><th className="r">Due ≤ 7 d</th><th className="r">Not checked</th><th className="r">Leads they checked</th></tr></thead>
+      <div className="grid-2-1">
+        <section className="card" aria-labelledby="team-h">
+          <header><div><h2 id="team-h">Team work</h2><p>Open opportunities and shared tasks per person. A workload view, not a ranking.</p></div><Link href="/activity">Team activity</Link></header>
+          <div className="tbl-wrap"><table className="tbl plain">
+            <thead><tr><th>Person</th><th className="r">Opportunities</th><th className="r">Tasks</th><th className="r">Due soon</th><th className="r">Overdue</th></tr></thead>
             <tbody>
-              {o.workload.map(w => (
+              {d.workload.map(w => (
                 <tr key={w.member.id}>
-                  <td><Link href={`/leads?assignee=${w.member.id}`} style={{ color: 'inherit', textDecoration: 'none' }}><Who name={w.member.full_name || w.member.email} /></Link></td>
-                  <td className="r">{w.open}</td>
+                  <td><Link href={`/activity?person=${w.member.id}`} style={{ color: 'inherit', textDecoration: 'none' }}><Who name={w.member.full_name || w.member.email} /></Link> <span className="muted" style={{ fontSize: 12 }}>{w.member.org_role || ''}</span></td>
+                  <td className="r"><Link href={`/leads?assignee=${w.member.id}`}>{w.open}</Link></td>
+                  <td className="r"><Link href={`/tasks?person=${w.member.id}`}>{w.tasks}</Link></td>
                   <td className="r">{w.dueSoon}</td>
-                  <td className="r">{w.unchecked}</td>
-                  <td className="r">{w.checkedByThem}</td>
+                  <td className="r">{w.overdue ? <span className="badge b-bad">{w.overdue}</span> : <span className="muted">0</span>}</td>
                 </tr>
               ))}
             </tbody>
           </table></div>
         </section>
+
+        <section className="card" aria-labelledby="pipe-h">
+          <header><div><h2 id="pipe-h">Pipeline</h2><p>Each step is a separate decision.</p></div></header>
+          <div className="funnel">
+            {d.funnel.map((f, i) => (
+              <Link key={f.label} href={f.href} title={`${f.label}: ${f.n}`}>
+                <span>{f.label}</span>
+                <span className="track"><span style={{ width: `${(f.n / maxFunnel) * 100}%`, background: i === d.funnel.length - 1 ? 'var(--teal)' : undefined, opacity: 1 - i * 0.08 }} /></span>
+                <b>{f.n}</b>
+              </Link>
+            ))}
+          </div>
+          <p className="legal">Correct ≠ eligible ≠ Go. Lead accuracy so far: {o.accuracy == null ? 'not enough checked leads' : `${Math.round(o.accuracy * 100)}% of ${o.reviewed} checked`}.</p>
+        </section>
       </div>
 
-      <div className="grid2">
-        <section className="card">
-          <header><div><h2>Follow-ups this week</h2><p>Leads we are pursuing with a follow-up date in the next 7 days or overdue.</p></div><Link href="/leads?decision=Go">{o.decisions.go} Go</Link></header>
-          {o.followUps.length ? (
-            <div className="mini">
-              {o.followUps.slice(0, 8).map(l => {
-                const d = daysLeft(l.next_followup)!;
+      <div className="grid-2-1">
+        <section className="card" aria-labelledby="act-h">
+          <header><div><h2 id="act-h">Recent activity</h2><p>Who did what, on which opportunity.</p></div><Link href="/activity">All activity</Link></header>
+          {d.recent.length ? (
+            <ul className="feed">
+              {d.recent.map((a: Activity) => {
+                const l = byId.get(a.lead_id); const who = a.actor ? nameOf(members, a.actor) : 'Crawler / import';
                 return (
-                  <div key={l.id}>
-                    <div style={{ minWidth: 0 }}><Link href={`/leads/${l.id}`}>{l.title}</Link><div className="by">{[l.contact_name, l.contact_role].filter(Boolean).join(', ') || l.funder_buyer}</div></div>
-                    <span className="dl"><span className="mono">{fmtDate(l.next_followup)}</span><span className={`due ${d <= 0 ? 'urgent' : 'soon'}`}>{d < 0 ? `overdue ${-d} d` : d === 0 ? 'today' : `in ${d} d`}</span></span>
-                    <div className="st"><DecisionPill d={l.decision} /><Who name={nameOf(members, l.assigned_to)} /></div>
-                  </div>
+                  <li key={a.id}>
+                    <Avatar name={who} />
+                    <span style={{ minWidth: 0 }}>
+                      <Link href={a.actor ? `/activity?person=${a.actor}` : '/activity'} style={{ color: 'inherit', fontWeight: 700, textDecoration: 'none' }}>{who}</Link> <span className="what">{ACT[a.action] || a.action}</span>{' '}
+                      {l ? <><Link className="rf" href={`/leads/${l.id}?tab=activity`}>{l.ref_code}</Link> <span className="muted">{l.title.slice(0, 70)}{l.title.length > 70 ? '…' : ''}</span></> : null}
+                      {a.detail && a.action !== 'created' ? <div className="muted" style={{ fontSize: 12.5 }}>{a.detail.slice(0, 140)}</div> : null}
+                    </span>
+                    <span className="when" title={fmtDateTime(a.created_at)}>{ago(a.created_at)}</span>
+                  </li>
                 );
               })}
-            </div>
-          ) : <p className="muted">No follow-ups due. Set a follow-up date in the Pursuit card on a lead.</p>}
+            </ul>
+          ) : <Empty title="No activity yet" />}
         </section>
 
-        <section className="card">
-          <header><div><h2>Why we said No-go</h2><p>Recent reasons. The crawler reads these before scoring new leads.</p></div><Link href="/leads?decision=No-go&show=all">{o.decisions.noGo} No-go</Link></header>
-          {o.noGoReasons.length ? (
-            <ul className="reasons">
-              {o.noGoReasons.map(l => <li key={l.id}><Link href={`/leads/${l.id}`}>{l.title}</Link><span>{l.decision_reason}</span></li>)}
-            </ul>
-          ) : <p className="muted">No No-go decisions yet. On a lead, use “Do we go for it?” and give the reason.</p>}
-        </section>
+        <div style={{ display: 'grid', gap: 18, alignContent: 'start' }}>
+          <section className="card" aria-labelledby="my-h">
+            <header><div><h2 id="my-h">My leads &amp; relationships</h2><p>Private to you unless you share them.</p></div><Link href="/my">Open</Link></header>
+            {myRels.length ? (
+              <ul className="feed">
+                {myRels.map(r => (
+                  <li key={r.id} style={{ gridTemplateColumns: 'minmax(0,1fr) auto' }}>
+                    <span style={{ minWidth: 0 }}><Link href={`/my?rel=${r.id}`} style={{ fontWeight: 700, color: 'var(--ink)', textDecoration: 'none' }}>{r.organisation}</Link><div className="muted" style={{ fontSize: 12.5 }}>{r.next_action || r.status}</div></span>
+                    <FollowUp date={r.next_followup} />
+                  </li>
+                ))}
+              </ul>
+            ) : <Empty title="No personal leads yet" action={{ href: '/my', label: '+ Add a personal lead' }} />}
+          </section>
+
+          <section className="card" aria-labelledby="wk-h">
+            <header><div><h2 id="wk-h">Applications per week</h2><p>Opportunities with an “applied on” date, last 8 weeks.</p></div><Link href="/reports">Reports</Link></header>
+            <div className="weeks" role="img" aria-label={d.weeks.map(w => `week of ${w.week}: ${w.count}`).join(', ')}>
+              {d.weeks.map(w => <div key={w.week} title={`Week of ${fmtDate(w.week)}: ${w.count}`}><b>{w.count || ''}</b><i style={{ height: `${(w.count / maxWeek) * 60}px` }} /><span>{fmtDate(w.week).replace(/ \d{4}$/, '')}</span></div>)}
+            </div>
+          </section>
+        </div>
       </div>
 
-      <section className="card">
-        <header><div><h2>News to review</h2><p>Latest stories from the news feeds, most likely relevant first.</p></div><Link href="/news">Open news</Link></header>
-        {toReview.length ? (
-          <ul className="timeline">
-            {toReview.map(n => (
-              <li key={n.id} style={{ gridTemplateColumns: 'minmax(0,1fr)' }}>
-                <div><a href={n.url} target="_blank" rel="noopener noreferrer">{n.title}</a>
-                  <div className="when">{n.source} · {ago(n.published_at)}{n.auto_score >= 3 ? <> · <span className="hint">Likely relevant</span></> : null}</div></div>
+      <section className="card" aria-labelledby="fu-h">
+        <header><div><h2 id="fu-h">Follow-ups this week</h2><p>Opportunities we are pursuing with a follow-up due in 7 days or overdue.</p></div><Link href="/leads?decision=Go">All Go</Link></header>
+        {(() => {
+          const fu = leads.filter(l => l.next_followup && (daysLeft(l.next_followup) ?? 99) <= 7 && !['Won', 'Lost', 'Dropped', 'Banked'].includes(l.stage)).sort((a, b) => String(a.next_followup).localeCompare(String(b.next_followup))).slice(0, 6);
+          return fu.length ? (
+            <ul className="feed">{fu.map(l => (
+              <li key={l.id} style={{ gridTemplateColumns: 'minmax(0,1fr) 140px auto' }}>
+                <span style={{ minWidth: 0 }}><Ref code={l.ref_code} /> <Link className="t" href={`/leads/${l.id}?tab=proposal`}>{l.title}</Link><div className="muted" style={{ fontSize: 12.5 }}>{[l.contact_name, l.contact_role].filter(Boolean).join(', ') || l.funder_buyer}</div></span>
+                <FollowUp date={l.next_followup} />
+                <DecisionPill d={l.decision} />
               </li>
-            ))}
-          </ul>
-        ) : <p className="muted">No unreviewed news. The daily news job runs at 7:00 IST; admins can also fetch now from the News page.</p>}
+            ))}</ul>
+          ) : <Empty title="No follow-ups due">Set a follow-up date on the Proposal tab of an opportunity.</Empty>;
+        })()}
       </section>
     </>
   );

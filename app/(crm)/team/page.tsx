@@ -1,4 +1,6 @@
-import { accessAddAction, accessRemoveAction, feedAddAction, feedRemoveAction, nameAction, roleAction } from '@/app/actions';
+import { accessAddAction, accessRemoveAction, feedAddAction, feedRemoveAction, nameAction, orgRoleAction, roleAction } from '@/app/actions';
+import Link from 'next/link';
+import { ORG_ROLES } from '@/lib/types';
 import { Who } from '@/components/ui';
 import { getSession, lastIngest, listAccess, listFeeds, listLeads, listMembers } from '@/lib/data';
 import { fmtDateTime } from '@/lib/format';
@@ -18,8 +20,8 @@ export default async function TeamPage({ searchParams }: { searchParams: SP }) {
       <div className="phead">
         <div>
           <div className="eyebrow">Team</div>
-          <h1>Team &amp; settings</h1>
-          <p>Who can sign in, who owns what, where news comes from, and how the crawler connects.</p>
+          <h1>Users &amp; access</h1>
+          <p>Who can sign in, each person’s organisation role (drives permissions — see <Link href="/settings/permissions">Roles &amp; permissions</Link>), admin access, and news feeds.</p>
         </div>
       </div>
       {msg ? <div className="note ok">{msg}</div> : null}
@@ -28,7 +30,7 @@ export default async function TeamPage({ searchParams }: { searchParams: SP }) {
       <section className="card">
         <header><div><h2>Members</h2><p>Everyone who has signed in. New people appear here after their first login.</p></div></header>
         <div className="tbl-wrap"><table className="tbl">
-          <thead><tr><th>Person</th><th>Email</th><th className="r">Open leads owned</th><th className="r">Leads checked</th><th>Role</th></tr></thead>
+          <thead><tr><th>Person</th><th>Email</th><th className="r">Open leads owned</th><th className="r">Leads checked</th><th>Organisation role</th><th>System admin</th></tr></thead>
           <tbody>
             {members.map(m => (
               <tr key={m.id}>
@@ -36,6 +38,15 @@ export default async function TeamPage({ searchParams }: { searchParams: SP }) {
                 <td className="mono">{m.email}</td>
                 <td className="r">{leads.filter(l => l.assigned_to === m.id && isOpen(l)).length}</td>
                 <td className="r">{leads.filter(l => l.verified_by === m.id).length}</td>
+                <td>
+                  {admin ? (
+                    <form action={orgRoleAction} className="inline">
+                      <input type="hidden" name="id" value={m.id} />
+                      <select name="org_role" defaultValue={m.org_role || ''} aria-label={`Organisation role for ${m.email}`} key={m.org_role || 'none'}><option value="">Not set (BD Executive)</option>{ORG_ROLES.map(r => <option key={r}>{r}</option>)}</select>
+                      <button className="btn btn-sm" type="submit">Save</button>
+                    </form>
+                  ) : <span className="pill">{m.org_role || 'Not set'}</span>}
+                </td>
                 <td>
                   {admin && m.id !== session?.user.id ? (
                     <form action={roleAction} className="inline">

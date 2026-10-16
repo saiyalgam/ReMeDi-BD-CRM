@@ -13,8 +13,8 @@ export default async function NewLead({ searchParams }: { searchParams: Promise<
       <div className="phead">
         <div>
           <div className="eyebrow">Leads</div>
-          <h1>Add a lead</h1>
-          <p>For a tender or call you heard about outside the crawler: WhatsApp, a client, GeM, a partner. It goes to Needs checking like any other lead.</p>
+          <h1>Add an opportunity</h1>
+          <p>For a tender or call you heard about outside the crawler: WhatsApp, a client, GeM, a partner. It gets a permanent reference number and waits in Crawler intake for verification like any other lead. For many rows, use <Link href="/settings/import">spreadsheet import</Link>.</p>
         </div>
       </div>
       {err ? <div className="note err" role="alert">{err}</div> : null}

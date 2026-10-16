@@ -5,3 +5,12 @@ node_modules
 *.tsbuildinfo
 next-env.d.ts
 .vercel
+
+# knowledge-base outputs and extracted text never go to Git
+kb-output/
+*.jsonl.gz
+scripts/kb_ingest/out/
+
+# lead data files stay on the laptop
+crm-*.json
+starting-leads.json

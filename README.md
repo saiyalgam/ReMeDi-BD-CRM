@@ -103,11 +103,77 @@ Invoke-RestMethod -Method Post -Uri "https://YOUR-APP.vercel.app/api/ingest" -He
 
 In update mode the file refreshes scores and assessment fields and sets the deadlines it gives, but it never changes Correct / Wrong, owner, stage, pursuit progress or a Go / No-go the team already made. Sending the same file twice changes nothing.
 
+## Update 3 (October 2026): opportunity workflow
+
+What changed (details, permission matrix and open decisions: `IMPLEMENTATION_NOTES.md`):
+
+- **Stable reference numbers** (`OPP-2026-0042`) on every opportunity, never reused, also for wrong or duplicate leads.
+- **Four separate fields**: lead verification, reviewed eligibility (the crawler's guess is kept apart), Go / No-go (recommend → approve), and the 11-stage pipeline (Identified … Won, Lost, Dropped, Banked). Old stages are mapped: New → Identified, Qualified → Under consideration, Preparing → In preparation.
+- **Eligibility, clause by clause**: tender wording, source page, company evidence, status, confidence and the exact open question. "Meets directly" is blocked while a mandatory clause is open.
+- **Deadlines and amendments** as dated records. A later date from the crawler waits in the Review queue and moves the deadline only when someone verifies it.
+- **New screens**: dashboard, review queue, crawler intake (verify + merge duplicates), opportunity tabs (overview, source & amendments, eligibility, fit & risk, Go / No-go, partners, documents, tasks, proposal, activity), tasks, my leads & relationships, team activity, partners, knowledge base, reports, settings (roles & permissions, scoring, integrations, spreadsheet import).
+- **Roles & permissions** (CEO, CTO, VP, GM, BD Executive) enforced by the database. Open policy questions are marked in the matrix.
+- **Google Calendar** meetings open in the person's own Google account. (Google Chat notices were removed in update 4 and are now marked Planned.)
+
+To install it on a live CRM:
+
+1. Supabase → SQL Editor → run `supabase/update-3.sql` (after `schema.sql`; safe to run twice).
+2. Upload this folder to the GitHub repository again; Vercel redeploys.
+3. Sign in as an admin, open **Settings → Roles & permissions**, and give each person their organisation role. Until then, admins can do everything and everyone else is treated as BD Executive.
+4. Review the open policy questions on that screen with leadership.
+6. Optional: import the Excel pipeline under **Settings → Spreadsheet import**.
+
+New installs: run `schema.sql`, `update-2.sql`, `update-3.sql`, then `update-4.sql`.
+
+## Update 4 (October 2026): knowledge base, evidence and Google Drive
+
+What changed (permissions and open questions: `IMPLEMENTATION_NOTES.md`; go-live steps: `DEPLOYMENT_CHECKLIST.md`):
+
+- **Knowledge base with provenance.** Every document record can carry a stable document ID, source path (and the archive it came from), SHA-256, file type and size, owning entity, category, sensitivity, extraction outcome and flags. Duplicate copies point to the original.
+- **Search with citations.** Postgres full-text search over extracted passages (`kb_search`). Every result names the document and the page, sheet + rows, slide or section. Restricted passages are searched only for roles with "See financial, statutory, banking and personal documents".
+- **Claims to review.** One sentence per claim, copied from a document, with a claim status (proposed, submitted, contracted, delivered, validated, expired, unverified) and a separate review status. Nothing is "validated" until a reviewer confirms it. Where documents disagree, all versions are kept in a conflict group.
+- **Evidence beside each eligibility clause.** A requirement can cite a claim; the Eligibility tab shows the quote and its location next to the tender wording and flags missing, expired and unconfirmed evidence.
+- **Google Drive folders.** "Create Go / No-go Drive folder" on the Documents tab builds `CRM Opportunities/OPP-YYYY-NNNN - Short title/` with six subfolders (00 Source and amendments … 05 Submission and outcome). It works before the final decision, is safe to press twice, and never changes sharing. Files can be linked, or copied when the admin's copy policy allows (never Restricted files).
+- **Google Meet and Chat are "Planned".** This release makes no Chat or Meet API calls and holds no credentials for them; the earlier Chat webhook sender was removed. The Calendar hand-off (opens Google Calendar in the person's own account) is unchanged.
+- **No AI by default.** No document text is sent to any AI or embedding provider. `integration_settings.ai_provider` is `none`.
+- **Brand colours** follow the brief: ReMeDi blue `#0E4C92`, ink `#0A3A70`, teal `#0A7F7A`; amber for uncertainty, red for errors and No-go.
+
+To install on a live CRM:
+
+1. Supabase → SQL Editor → run `supabase/update-4.sql` (after `update-3.sql`; safe to run twice).
+2. Push this folder to GitHub; Vercel redeploys.
+3. Optional, on your own computer: build and load the knowledge base (`scripts/kb_ingest/README.md`). The service-role key stays on that computer.
+4. Optional: Google Drive (below).
+
+### Google Drive setup (administrator)
+
+1. Google Cloud Console → create or pick a project → enable the **Google Drive API**.
+2. OAuth consent screen: Internal (Workspace) app; scopes `openid`, `email`, `.../auth/drive.file`.
+3. Credentials → OAuth client ID → Web application. Authorised redirect URI: `https://YOUR-APP.vercel.app/api/google/drive/callback`.
+4. Vercel → Environment variables: `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_TOKEN_ENC_KEY` (32 random bytes, base64), `NEXT_PUBLIC_SITE_URL`. Redeploy.
+5. In the CRM, **Settings → Integrations → Connect Google Drive** with the account that should own the folders (ideally one that can create folders in a Shared Drive already shared with the team).
+6. Set the root folder: leave the box empty to create "CRM Opportunities" in that account's My Drive, or paste a folder link and choose "create inside it". With the `drive.file` scope the CRM sees only folders it created (or picked with the Google Picker), so it cannot browse the rest of anyone's Drive.
+7. Choose the copy policy (default: link only).
+
+The refresh token is encrypted (AES-256-GCM) and readable only by server code with the service-role key; it never reaches the browser. **Disconnect** revokes it at Google and deletes it.
+
+## Exports and printing (October 2026)
+
+Every list screen has an **Export** menu: Pipeline, Review queue, Tasks, Partners, Knowledge base, Team activity and Reports, plus **Export record** on each opportunity and **Export / print** on the dashboard.
+
+- **Excel workbook (.xlsx)** and **CSV**: what the screen shows, with the same filters applied. A workbook has a bold, frozen header row and filters. Multi-sheet exports (Reports, a single opportunity) offer one CSV per sheet.
+- **Print / Save as PDF**: prints the page without the menu, buttons and forms, with a ReMeDi header and who printed it and when. Choose "Save as PDF" in the print dialog.
+- Downloads need the **Export lists** permission (`opp.export`; by default leadership and GM, not BD executives). Printing is open to everyone, because it shows only what they can already see.
+- Exports never include data the role cannot see. Partner contacts and due diligence need "see sensitive partner fields"; restricted evidence is left out; reports need "see reports".
+- Each download is written to the audit log (who, what, which filters, how many rows). It shows under Team activity → Audit.
+- Cells that start with `= + - @` are prefixed with an apostrophe, so a spreadsheet never runs them as formulas.
+- Existing installs: re-run `supabase/update-3.sql` once to add the "log own exports" policy. It is safe to run again.
+
 ## Using it day to day
 
-- **Needs checking:** open each new lead and mark it *Correct* or *Wrong lead*, or use the ✓ / ✕ buttons in the list. Add a reason when it is wrong, such as "construction only" or "NGO-only". This is the data behind the accuracy table.
+- **Crawler intake:** open each new lead and mark it *Correct* or *Incorrect* (with a reason), or merge it into an existing opportunity when it is a duplicate. Add a reason when it is wrong, such as "construction only" or "NGO-only". This is the data behind the accuracy table.
 - **Assign:** pick an owner from the dropdown on the lead list or the lead page. My leads shows only yours.
-- **Stage:** move a lead to *Qualified*, then *Preparing*, then *Submitted*, and finally *Won*, *Lost* or *Dropped*. A lead disappears from the open lists when its deadline passes or it is closed; use *Include closed* to see it again.
+- **Stage:** Identified → Screening → Under consideration → Partnering → In preparation (needs an approved Go) → Submitted → Clarification → Won, Lost, Dropped or Banked. A lead disappears from the open lists when its deadline passes or it is closed; use *Include closed* to see it again.
 - **News:** each morning's stories are sorted with the most likely relevant first. Mark each one *Relevant* or *Not relevant*. Admins can press *Fetch news now* and can add or remove feeds on the Team page; any Google News search URL works as a feed.
 
 ## Security
@@ -124,7 +190,7 @@ npm install
 DEMO_MODE=1 npm run dev        # Windows PowerShell: $env:DEMO_MODE=1; npm run dev
 ```
 
-Then open http://localhost:3000. Demo mode loads the 67 leads from the two search rounds with a few sample teammates, skips login, and stores changes in a temp file on your computer. Never set `DEMO_MODE` on Vercel.
+Then open http://localhost:3000. Demo mode loads the 67 leads from the two search rounds with sample teammates in each role (use “Demo: view as” at the bottom of the menu to see how permissions change the screens), skips login, and stores changes in a temp file on your computer. Entries marked [Sample] are fictional. Never set `DEMO_MODE` on Vercel.
 
 `npm test` runs the unit tests for lead-type detection, crawler-row cleaning and the news reader.
 
