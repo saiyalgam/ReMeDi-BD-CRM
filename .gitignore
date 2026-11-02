@@ -25,3 +25,5 @@ starting-leads.json
 Claude outputs/
 *.zip
 *.xlsx
+
+/tender-decision-tree.png
