@@ -14,3 +14,14 @@ scripts/kb_ingest/out/
 # lead data files stay on the laptop
 crm-*.json
 starting-leads.json
+
+# secrets in any spelling (Windows can save ".env.local" as ".env.local.txt")
+.env*
+!.env.example
+*.pem
+*accessKeys*
+
+# working files from Claude / Excel exports stay on the laptop
+Claude outputs/
+*.zip
+*.xlsx
