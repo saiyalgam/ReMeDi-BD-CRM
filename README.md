@@ -123,7 +123,46 @@ To install it on a live CRM:
 4. Review the open policy questions on that screen with leadership.
 6. Optional: import the Excel pipeline under **Settings → Spreadsheet import**.
 
-New installs: run `schema.sql`, `update-2.sql`, `update-3.sql`, then `update-4.sql`.
+New installs: run `schema.sql`, `update-2.sql`, `update-3.sql`, `update-4.sql`, `update-5.sql`, then `update-6.sql`.
+
+## Update 6 (November 2026): PIN unlock (TPIN)
+
+Sign in with the email link once per browser; after that the CRM opens with a 6-digit PIN.
+
+- **First sign-in:** after the email link, the CRM asks each person to create a PIN (6 digits; repeated or sequential digits are refused).
+- **Every later visit:** if the browser was closed, or 12 hours have passed, or the person pressed **Lock now** (lock icon in the top bar), the CRM shows "Welcome back" and asks for the PIN. No new email link is needed while the Supabase session on that browser is alive.
+- **Wrong PIN:** 5 wrong tries lock the PIN. The person then signs in with the email link, which clears the lock, and sets a new PIN within 15 minutes.
+- **Forgot PIN:** "Forgot PIN? Sign in with email" on the PIN screen does the same.
+- **Change PIN:** lock icon → Change PIN (needs the current PIN).
+- **Sign out** (lock icon → Sign out) ends the session on that browser; the next visit needs the email link again.
+- **Admin reset:** in Supabase, delete that person's row from `user_pins`; they create a new PIN after their next sign-in.
+
+Security: the PIN is stored only as a scrypt hash with a per-user salt in `user_pins`, a table browsers cannot read (RLS on, no policies; server code uses the service-role key). The "unlocked" state is an httpOnly cookie signed with `PIN_COOKIE_SECRET`, tied to the user and cleared when the browser closes. A PIN protects an already signed-in browser; it does not replace the email sign-in on a new device.
+
+To install:
+
+1. Supabase → SQL Editor → run `supabase/update-6.sql` (after `update-5.sql`; safe to run twice).
+2. Vercel → Environment Variables → add `PIN_COOKIE_SECRET` (32+ random characters, Sensitive). Generate one with `node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"`. Run step 1 first: the PIN screen switches on as soon as this variable exists.
+3. Push and redeploy. Everyone creates a PIN on their next visit.
+
+## Update 5 (November 2026): Lead Tracker board, events and outreach
+
+The screens now follow the "Clinical Precision Pipeline" design (white sidebar, top bar with search, Quick Add, follow-up bell and light/dark switch; Roboto Flex). New pages:
+
+- **Lead Tracker** (`/tracker`): the Excel pipeline as a board. Three breakdowns (present state, category, size bucket; count and ₹ crore, click to filter), eight status totals, filters, a "Closing in 7 days" chip, and Kanban or Table view. Drag a card (or use its ⋮ menu) to change status. Moving to Lost, No-Go or Tanked asks for a reason; moving to In Process needs an approved Go. The CRM stage stays the source of truth: Lead Identified ← Identified/Screening, Under Consideration ← Under consideration/Partnering, In Process ← In preparation/Submitted, Negotiation ← Clarification, No-Go ← Dropped or a No-go decision, Tanked ← Banked. Unverified crawler leads are hidden unless you pick "Crawler" or "All".
+- **Events** (`/events`, `/events/[id]`): plan → apply-by deadline (red when ≤7 days) → checklist → attend → contacts met → learnings → post-event report. A quarterly table compares planned vs attended, cost estimate vs actual, contacts, leads created, pipeline value and cost per lead.
+- **People & PoCs** (`/people`): every contact met at events or through personal networks. Select rows to take them, assign them, share them round-robin, set status or set a follow-up date. Each contact can be converted to a lead.
+- **Pre-Leads** and **Cohorts**: the "Pre-Leads" and "Cohorts" sheets as editable lists; a pre-lead converts to a lead.
+- **My follow-ups** (`/followups`): contacts, pre-leads, tasks and leads you own, grouped Overdue / Due today / This week / Later.
+- **Excel upload with assignment** on Events, an event's Contacts tab, People, Pre-Leads and Cohorts: upload → pick sheet and header row → map columns (guessed from headers such as the AVPN and "Personal Leads" sheets) → check (dates, phone numbers like `9711309546.0`, several emails in one cell, owner names matched to users, duplicates by email then organisation + name) → assign (owner column, me, one person, or round-robin) and a follow-up within N days → import. Problems can be downloaded as CSV.
+
+Permissions (Settings → Roles & permissions, area "Events & outreach"): `outreach.read` and `outreach.edit` for all roles; `outreach.assign` (give contacts/pre-leads/cohorts to someone else, round-robin) for CEO, CTO, VP and GM. Whether BD Executives may assign others is marked as an open question. The database enforces the same rule with a trigger.
+
+To install on a live CRM:
+
+1. Supabase → SQL Editor → run `supabase/update-5.sql` (after `update-4.sql`; safe to run twice).
+2. Push this folder to GitHub; Vercel redeploys.
+3. Review the three new permission rows with leadership.
 
 ## Update 4 (October 2026): knowledge base, evidence and Google Drive
 

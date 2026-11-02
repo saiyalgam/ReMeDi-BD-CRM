@@ -175,3 +175,24 @@ Open http://localhost:3000 and use **Demo: view as** (bottom of the menu) to swi
 2. Which account owns the folders: a Shared Drive (recommended) or a person's My Drive?
 3. Is copying Internal/Confidential files into opportunity folders allowed (`copy_internal`), or link only?
 4. Who confirms claims about turnover and registrations (restricted)? Today: CEO and CTO only, because VP has no restricted access by default.
+
+## Update 5 (2 Nov 2026): Lead Tracker, events and outreach
+
+Files: see `LLM_HANDOFF.md` → "Update 5 notes".
+
+Verification (cloud workspace, demo mode): `npx tsc --noEmit` clean; `npm run build` succeeded; `npm test` 6/6 pass. Rendered `/tracker` (Kanban and Table), `/events`, an event's Contacts tab, `/people`, `/pre-leads`, `/cohorts`, `/followups` as Demo CEO and as a sample BD Executive; BD Executive did not see assign/round-robin controls. Imported a two-row sample CSV of contacts (phone and multiple-email cleaning worked) and moved a lead on the board via the card menu.
+
+Not verified: `update-5.sql` against a live Supabase project (written to be rerunnable, not executed here); drag-and-drop with a mouse (the keyboard "Move to" path was exercised); dark mode visual pass.
+
+Assumptions / open questions:
+- BD Executives may not assign contacts to other people (`outreach.assign` = Open question).
+- Excel "Dropped" maps to No-Go and "Banked" to Tanked.
+- Size buckets: Small ≤ ₹50 L, Medium ₹50 L–₹2 Cr, Large > ₹2 Cr, from the lead's amount text.
+
+## Update 6 (2 Nov 2026): TPIN unlock
+
+Verification (demo mode): `npx tsc --noEmit` clean, `npm run build` succeeded, `npm test` 6/6. Clicked through: first visit → /set-pin; weak PIN refused; PIN saved → back to /tracker; new browser session → /unlock (not /login); wrong PIN → "4 attempts left"; right PIN → page; Lock now → /unlock; 5 wrong → locked.
+
+Not verified: the live Supabase path (`update-6.sql`, service-role access, the email-link → /set-pin redirect in `/auth/confirm`).
+
+Assumptions: 6-digit PIN; unlock lasts until the browser closes or 12 hours; 5 attempts; PIN reset needs an email sign-in within 15 minutes. These are constants in `lib/pin.ts` and `lib/pin-cookie.ts`.

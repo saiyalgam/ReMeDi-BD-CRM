@@ -214,3 +214,16 @@ Confirm scope with the user before starting any of these:
 - New: `supabase/update-4.sql`, `lib/kb.ts`, `lib/drive.ts`, `lib/drive-data.ts`, `/knowledge/[id]`, `/api/google/drive/{connect,callback}`, `app/(crm)/leads/[id]/drive-panel.tsx`, `scripts/kb_ingest/*`.
 - Google Chat posting was **removed** (Planned). Do not re-add Chat or Meet API calls without an explicit request.
 - Knowledge-base text comes only from `scripts/kb_ingest/load_supabase.py` (service role, run on a company computer). Never commit extracted text or ingest outputs.
+
+## Update 5 notes (2 Nov 2026)
+
+- New: `supabase/update-5.sql` (bd_events, bd_contacts, bd_learnings, pre_leads, cohorts; `outreach_owner_guard()` trigger; RLS on `outreach.*` permissions), `lib/tracker.ts`, `lib/outreach.ts`, `app/outreach-actions.ts`, `components/{TrackerBoard,OutreachUpload,ContactTable,ThemeToggle}.tsx`, pages `/tracker`, `/events`, `/events/[id]`, `/people`, `/pre-leads`, `/cohorts`, `/followups`.
+- Changed: `app/(crm)/layout.tsx` (new shell and top bar), `app/layout.tsx` (Roboto Flex), `components/NavLinks.tsx`, `components/ui.tsx` (icons), `lib/types.ts`, `lib/perm.ts`, `lib/demo.ts` (`ensureOutreach` seeds [Sample] outreach data), `app/globals.css` ("Update 5" block at the end).
+- Tracker status is derived from the CRM stage (`lib/tracker.ts: trackerStatus`, `TO_STAGE`). Do not add a separate status column.
+- Owner changes are checked twice: `checkOwner` in `lib/outreach.ts` and the database trigger. Keep them identical.
+
+## Update 6 notes (2 Nov 2026): TPIN unlock
+
+- New: `supabase/update-6.sql` (`user_pins`, RLS on, no policies), `lib/pin.ts` (scrypt hash, attempt counter, lock), `lib/pin-cookie.ts` (Web Crypto HMAC cookie, usable in `proxy.ts`), `app/pin-actions.ts`, `components/PinForm.tsx`, `app/unlock/page.tsx`, `app/set-pin/page.tsx`.
+- Changed: `proxy.ts` (unlock gate when `PIN_COOKIE_SECRET` is set; always on in demo), `app/auth/confirm/route.ts` (email sign-in sets the unlock + 15-minute "fresh" cookies, clears a PIN lock, sends first-timers to /set-pin), `app/auth/signout/route.ts` (clears both cookies), `app/(crm)/layout.tsx` (lock menu; redirect to /set-pin when no PIN), `app/actions.ts` (demo "view as" keeps the browser unlocked), `components/ui.tsx` (lock icon), `lib/demo.ts` (`pins` in the demo store), `.env.example`.
+- Never log, return or store the PIN itself. Never read `user_pins` from the browser client.

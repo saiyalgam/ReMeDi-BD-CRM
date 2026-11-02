@@ -3,7 +3,7 @@ import Link from 'next/link';
 import type { ReactNode } from 'react';
 import { usePathname, useSearchParams } from 'next/navigation';
 
-export interface NavItem { href: string; label: string; count?: number; color?: string; icon?: ReactNode; match?: string }
+export interface NavItem { href: string; label: string; count?: number; color?: string; icon?: ReactNode; match?: string; alert?: boolean }
 
 export function NavLinks({ title, items }: { title: string; items: NavItem[] }) {
   const path = usePathname();
@@ -13,7 +13,7 @@ export function NavLinks({ title, items }: { title: string; items: NavItem[] }) 
     if (it.match) return path === it.match || path.startsWith(it.match + '/');
     const [p, q] = it.href.split('?');
     if (p !== path) return false;
-    if (!q) return !sp.get('type') && !sp.get('assignee');
+    if (!q) return !sp.get('type') && !sp.get('assignee') && !sp.get('q');
     return new URLSearchParams(q).toString().split('&').every(kv => current.includes(kv));
   };
   return (
@@ -22,7 +22,7 @@ export function NavLinks({ title, items }: { title: string; items: NavItem[] }) 
       {items.map(it => (
         <Link key={it.href} href={it.href} className="navlink" aria-current={isActive(it) ? 'page' : undefined}>
           <span className="lbl">{it.icon}{it.color ? <i className="dot" style={{ background: it.color }} aria-hidden="true" /> : null}{it.label}</span>
-          {it.count != null ? <span className="count">{it.count}</span> : null}
+          {it.count != null ? <span className={`count${it.alert ? ' alert' : ''}`}>{it.count}{it.alert ? ' due' : ''}</span> : null}
         </Link>
       ))}
     </nav>

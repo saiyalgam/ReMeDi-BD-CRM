@@ -1,6 +1,8 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import type { EmailOtpType } from '@supabase/supabase-js';
 import { supabaseServer } from '@/lib/supabase/server';
+import { clearLock, getPin } from '@/lib/pin';
+import { FRESH_COOKIE, FRESH_MINUTES, UNLOCK_COOKIE, UNLOCK_HOURS, cookieOptions, signToken } from '@/lib/pin-cookie';
 
 // The magic link lands here. Handles both the token-hash link (works on any device) and the PKCE code link.
 export async function GET(request: NextRequest) {
@@ -19,5 +21,19 @@ export async function GET(request: NextRequest) {
   dest.search = '';
   if (error) { dest.pathname = '/login'; dest.searchParams.set('error', `Sign-in failed: ${error}. Request a new link.`); }
   else dest.pathname = next;
-  return NextResponse.redirect(dest);
+  const res = NextResponse.redirect(dest);
+  if (!error) {
+    // An email sign-in proves who this is: unlock this browser, clear a PIN lock, and allow a PIN reset for 15 minutes.
+    const uid = (await sb.auth.getClaims()).data?.claims?.sub;
+    if (uid) {
+      const unlock = await signToken('unlock', String(uid), UNLOCK_HOURS * 3600e3);
+      const fresh = await signToken('fresh', String(uid), FRESH_MINUTES * 60e3);
+      if (unlock) res.cookies.set(UNLOCK_COOKIE, unlock, cookieOptions);
+      if (fresh) res.cookies.set(FRESH_COOKIE, fresh, { ...cookieOptions, maxAge: FRESH_MINUTES * 60 });
+      await clearLock(String(uid)).catch(() => undefined);
+      // First sign-in: go and create a PIN.
+      if (unlock && !(await getPin(String(uid)).catch(() => true))) { dest.pathname = '/set-pin'; dest.search = ''; if (next !== '/') dest.searchParams.set('next', next); const toPin = NextResponse.redirect(dest); res.cookies.getAll().forEach(c => toPin.cookies.set(c)); return toPin; }
+    }
+  }
+  return res;
 }

@@ -311,3 +311,38 @@ export interface Session {
   orgRole: OrgRole;
   perms: string[];        // effective permissions (admins get every one)
 }
+
+// ---------------- BD outreach: events, contacts, pre-leads, cohorts (update 5) ----------------
+export const EVENT_IMPORTANCE = ['Must', 'High', 'Medium', 'Optional'] as const;
+export const EVENT_STATUSES = ['Planned', 'Registered', 'Preparing', 'Attended', 'Follow-up', 'Closed', 'Skipped'] as const;
+export const PARTICIPATION = ['Visitor', 'Speaker', 'Exhibitor', 'Panel', 'Award applicant', 'Other'] as const;
+export interface ChecklistItem { item: string; done: boolean; owner: string | null; due: string | null }
+export interface BdEvent {
+  id: number; name: string; dates_text: string | null; starts_on: string | null; ends_on: string | null;
+  apply_by: string | null; apply_by_text: string | null; importance: typeof EVENT_IMPORTANCE[number]; location: string | null;
+  purpose: string | null; participation: string | null; personnel: string[]; personnel_text: string | null;
+  cost_estimate: number | null; cost_actual: number | null; checklist: ChecklistItem[]; actual_output: string | null;
+  effectiveness: number | null; status: typeof EVENT_STATUSES[number]; created_by: string | null; created_at: string; updated_at: string;
+}
+
+export const MEETING_STATUSES = ['To contact', 'Scheduled', 'Follow-up', 'Met', 'No response', 'Closed'] as const;
+export type MeetingStatus = typeof MEETING_STATUSES[number];
+export interface BdContact {
+  id: number; event_id: number | null; organisation: string | null; name: string | null; title: string | null; phone: string | null; email: string | null;
+  met_on: string | null; meeting_status: MeetingStatus; details: string | null; next_action: string | null; owner: string | null;
+  followup_on: string | null; source: string | null; introducer: string | null; converted_lead: number | null;
+  created_by: string | null; created_at: string; updated_at: string;
+}
+export interface BdLearning { id: number; event_id: number | null; year: string | null; winners: string | null; model: string | null; learnings: string | null; created_by: string | null; created_at: string }
+
+export const PRELEAD_STATUSES = ['Assigned', 'Exploring', 'In progress', 'On hold', 'Lost', 'Converted'] as const;
+export interface PreLead {
+  id: number; task: string; opportunity: string | null; status: typeof PRELEAD_STATUSES[number]; steps: string | null; owner: string | null;
+  due_on: string | null; source: string | null; converted_lead: number | null; created_by: string | null; created_at: string; updated_at: string;
+}
+
+export const COHORT_STATUSES = ['Applied', 'Waiting', 'Joined', 'Conversation initiated', 'Not selected', 'Closed'] as const;
+export interface Cohort {
+  id: number; name: string; status: typeof COHORT_STATUSES[number]; contact: string | null; next_step: string | null; updates: string | null;
+  deadline: string | null; owner: string | null; created_by: string | null; created_at: string; updated_at: string;
+}

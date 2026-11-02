@@ -1,3 +1,29 @@
+# Deployment checklist — update 6 (PIN unlock)
+
+- [ ] Update 5 below is done.
+- [ ] Supabase → SQL Editor → run `supabase/update-6.sql`. Check: Table Editor shows `user_pins` with RLS enabled and **no** policies.
+- [ ] Vercel → Environment Variables → add `PIN_COOKIE_SECRET` (32+ random characters, Sensitive). Never put it in `.env.example` or Git.
+- [ ] Push and let Vercel deploy.
+- [ ] Sign in with your email link → you are asked to create a PIN. Close the browser, open the CRM again → PIN screen, not the email page.
+- [ ] Enter a wrong PIN once → "4 attempts left". Lock icon → Lock now → PIN screen.
+- [ ] Tell the team: create a PIN on the next visit; "Forgot PIN" = sign in with email again.
+
+---
+
+# Deployment checklist — update 5 (Lead Tracker, events, outreach)
+
+- [ ] Update 4 below is already done (`update-4.sql` has been run).
+- [ ] Vercel has **no** `DEMO_MODE` variable.
+- [ ] Supabase → SQL Editor → paste `supabase/update-5.sql` → Run (rerunnable, never deletes data).
+- [ ] Check: Table Editor shows `bd_events`, `bd_contacts`, `bd_learnings`, `pre_leads`, `cohorts`, each with RLS enabled.
+- [ ] Push this folder to GitHub (`main`); Vercel deploys.
+- [ ] As CEO: `/tracker` shows the board; drag a test lead and move it back; open **Events → + Add event**, add a [Sample] event, upload a small contacts sheet on its Contacts tab with round-robin.
+- [ ] As a BD Executive: the assign and round-robin controls are absent, and changing another person's contact owner is refused.
+- [ ] **Settings → Roles & permissions**: confirm the three "Events & outreach" rows, including the open question on BD Executives assigning others.
+- [ ] Do not upload sheets holding patient data. Contact sheets carry personal data: keep the source Excel files out of the Git folder.
+
+---
+
 # Deployment checklist — update 4
 
 Tick each line in order. Nothing in this release sends email, posts to Google Chat, creates Meet links or changes Google Drive sharing.

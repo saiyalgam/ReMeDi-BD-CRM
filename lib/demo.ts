@@ -12,7 +12,7 @@ import { LEGACY_STAGE } from './types';
 import type {
   AccessRule, Activity, AuditEntry, Criterion, DeadlineRec, DocRequest, IngestRun, IntegrationEvent, KbDoc, Lead, LeadDoc, LeadPartner,
   Member, NewsFeed, NewsItem, Partner, RelNote, Relationship, Requirement, Risk, RolePerm, SavedView, Score, Task,
-  DriveFile, DriveFolder, IntegrationSettings, KbClaim, KbEvidence
+  DriveFile, DriveFolder, IntegrationSettings, KbClaim, KbEvidence, BdContact, BdEvent, BdLearning, Cohort, PreLead
 } from './types';
 
 export interface DemoStore {
@@ -22,8 +22,12 @@ export interface DemoStore {
   deadlines: DeadlineRec[]; docs: LeadDoc[]; docRequests: DocRequest[]; tasks: Task[]; partners: Partner[]; leadPartners: LeadPartner[];
   kb: KbDoc[]; relationships: Relationship[]; relNotes: RelNote[]; events: IntegrationEvent[]; views: SavedView[]; audit: AuditEntry[];
   refSeq: number; seq: number;
+  // update 6: TPIN hashes (demo only; production keeps them in user_pins)
+  pins?: { user_id: string; pin_hash: string; failed_count: number; locked: boolean; updated_at: string }[];
   // update 4 (optional so an older demo file on disk still loads)
   kbEvidence?: KbEvidence[]; claims?: KbClaim[]; driveFolders?: DriveFolder[]; driveFiles?: DriveFile[]; settings?: IntegrationSettings;
+  // update 5 (seeded on first use when missing)
+  bdEvents?: BdEvent[]; contacts?: BdContact[]; learnings?: BdLearning[]; preLeads?: PreLead[]; cohorts?: Cohort[];
 }
 
 const ME = '00000000-0000-4000-8000-000000000001';
@@ -211,6 +215,9 @@ export function demo(): DemoStore {
     if (cached && cached.mtime === mtime) return cached.store;
     const store = JSON.parse(fs.readFileSync(FILE, 'utf8')) as DemoStore;
     store.leads = store.leads.map(l => ({ ...LEAD_DEFAULTS, ...l, stage: LEGACY_STAGE[l.stage] || l.stage }) as Lead);
+    // permissions added by later updates: give an older demo file their default rows
+    const have = new Set(store.rolePerms.map(r => r.org_role + '|' + r.permission));
+    for (const r of defaultRolePerms()) if (!have.has(r.org_role + '|' + r.permission)) store.rolePerms.push(r);
     cached = { mtime, store };
     return cached.store;
   } catch {
@@ -228,6 +235,53 @@ export function saveDemo(store: DemoStore = demo()): void {
 /** Next id for any demo table. */
 export function nextSeq(st: DemoStore = demo()): number { return st.seq++; }
 export const DEMO_ME = ME;
+
+/** [Sample] outreach records (events, contacts met, pre-leads, cohorts). Fictional names and example.com addresses only. */
+export function ensureOutreach(st: DemoStore): Required<Pick<DemoStore, 'bdEvents' | 'contacts' | 'learnings' | 'preLeads' | 'cohorts'>> {
+  if (!st.bdEvents) {
+    const now = new Date().toISOString(); const today = todayIST();
+    const d = (n: number) => new Date(Date.parse(today + 'T00:00:00Z') + n * 864e5).toISOString().slice(0, 10);
+    const ev = (name: string, extra: Partial<BdEvent>): BdEvent => ({
+      id: nextSeq(st), name, dates_text: null, starts_on: null, ends_on: null, apply_by: null, apply_by_text: null, importance: 'Medium', location: null,
+      purpose: null, participation: 'Visitor', personnel: [], personnel_text: null, cost_estimate: null, cost_actual: null, checklist: [], actual_output: null,
+      effectiveness: null, status: 'Planned', created_by: ME, created_at: now, updated_at: now, ...extra
+    });
+    const forum = ev('[Sample] Asia Health Philanthropy Forum', { dates_text: '25–27 Aug', starts_on: d(-68), ends_on: d(-66), apply_by: d(-80), importance: 'Must', location: 'New Delhi', purpose: 'Meet health funders; aim for 15 meetings', personnel: [ME, A], cost_estimate: 180000, cost_actual: 210000, status: 'Follow-up', effectiveness: 4,
+      checklist: [{ item: 'Deck and one-pager ready', done: true, owner: A, due: d(-75) }, { item: 'Meeting requests sent', done: true, owner: ME, due: d(-72) }, { item: 'Travel booked', done: true, owner: A, due: d(-74) }],
+      actual_output: '[Sample] 12 conversations; 3 converted to leads.' });
+    const summit = ev('[Sample] Pharma & Life Sciences Summit', { dates_text: '18 Sep', starts_on: d(-45), ends_on: d(-45), importance: 'Medium', location: 'New Delhi', purpose: 'Distributor meetings', participation: 'Exhibitor', personnel: [B], cost_estimate: 300000, status: 'Attended' });
+    const csr = ev('[Sample] National CSR Summit', { dates_text: '7–8 Oct (next edition)', starts_on: d(20), ends_on: d(21), apply_by: d(5), apply_by_text: 'Early bird ends', importance: 'Optional', location: 'New Delhi', purpose: 'Meet CSR heads', personnel: [A], cost_estimate: 40000, status: 'Registered',
+      checklist: [{ item: 'Register', done: true, owner: A, due: d(-2) }, { item: 'Shortlist CSR heads to meet', done: false, owner: A, due: d(10) }, { item: 'Print brochures', done: false, owner: B, due: d(15) }] });
+    const tech = ev('[Sample] Tech Summit Bengaluru', { dates_text: '17–19 Nov', starts_on: d(15), ends_on: d(17), importance: 'Optional', location: 'Bengaluru', purpose: 'Startup and government showcase', participation: 'Panel', status: 'Planned' });
+    st.bdEvents = [forum, summit, csr, tech];
+    const c = (event_id: number | null, name: string, organisation: string, title: string, meeting_status: BdContact['meeting_status'], owner: string | null, followup: number | null, details: string, extra: Partial<BdContact> = {}): BdContact => ({
+      id: nextSeq(st), event_id, organisation, name, title, phone: null, email: name.toLowerCase().replace(/[^a-z]+/g, '.').replace(/^\.|\.$/g, '') + '@example.com',
+      met_on: event_id === forum.id ? d(-68) : null, meeting_status, details, next_action: null, owner, followup_on: followup == null ? null : d(followup),
+      source: event_id ? 'Event' : 'Personal network', introducer: null, converted_lead: null, created_by: ME, created_at: now, updated_at: now, ...extra
+    });
+    st.contacts = [
+      c(forum.id, 'Ritu Sharma', '[Sample] Health Foundation', 'Head, Health & Wellbeing', 'Scheduled', ME, 3, 'Asked for an email describing our care models.', { next_action: 'Send the models note' }),
+      c(forum.id, 'Daniel Ong', '[Sample] Ventures Asia', 'Co-founder', 'Follow-up', A, -1, 'Can connect us to partners in South-East Asia.', { next_action: 'WhatsApp reminder' }),
+      c(forum.id, 'Kavya Iyer', '[Sample] Rural Trust', 'CEO', 'No response', ME, 6, 'Funds scaling organisations; reconnect.'),
+      c(forum.id, 'Arjun Mehta', '[Sample] Industries CSR', 'CSR Head', 'Met', B, 1, 'Interested in screening for factory workers.'),
+      c(forum.id, 'Leena Joseph', '[Sample] State Health Department', 'Director', 'To contact', null, null, 'Met briefly at the panel.'),
+      c(summit.id, 'Kabir Shah', '[Sample] Integrator', 'Partnerships Lead', 'To contact', B, 2, 'Distribution in the West.'),
+      c(null, 'Priya Nair', '[Sample] Family Foundation', 'Programme Manager', 'Follow-up', ME, 4, 'Email draft ready.', { introducer: 'Demo CEO', source: 'Personal network', next_action: 'CEO to request a meeting' })
+    ];
+    st.learnings = [{ id: nextSeq(st), event_id: forum.id, year: '2025', winners: '[Sample] Mobile Clinics Co.', model: 'Mobile primary care + diagnostics', learnings: 'Close precedent for our model.', created_by: ME, created_at: now }];
+    const p = (task: string, opportunity: string, status: PreLead['status'], owner: string | null, due: number | null, steps: string): PreLead => ({ id: nextSeq(st), task, opportunity, status, steps, owner, due_on: due == null ? null : d(due), source: 'Referral', converted_lead: null, created_by: ME, created_at: now, updated_at: now });
+    st.preLeads = [
+      p('[Sample] Specifications and brochures for distributor search', 'Distributor identification in central India', 'Assigned', B, 4, 'Send data, presentation, meeting'),
+      p('[Sample] Proposal for pulmonary screening pilot', 'Ministry programme opportunity', 'Exploring', A, 7, 'Create a proposal; draft an RFP response'),
+      p('[Sample] Partner list for kiosk fabrication', 'Health kiosk bids need a structure partner', 'In progress', B, 2, 'Shortlist three fabricators'),
+      p('[Sample] Hospital integration enquiry', 'Hospital wants an open interface', 'Lost', null, null, 'Needed an open-source stack')
+    ];
+    const ch = (name: string, status: Cohort['status'], updates: string): Cohort => ({ id: nextSeq(st), name, status, contact: null, next_step: null, updates, deadline: null, owner: A, created_by: ME, created_at: now, updated_at: now });
+    st.cohorts = [ch('[Sample] Rebuild Programme', 'Applied', 'Applied; follow up next week'), ch('[Sample] Tech for Development', 'Waiting', 'Waiting for the health portfolio'), ch('[Sample] Impact Partners Network', 'Joined', 'Joined; meeting the programme team'), ch('[Sample] Philanthropy Accelerator', 'Conversation initiated', 'First call done')];
+    saveDemo(st);
+  }
+  return st as Required<Pick<DemoStore, 'bdEvents' | 'contacts' | 'learnings' | 'preLeads' | 'cohorts'>>;
+}
 
 /** [Sample] evidence passages and claims so the knowledge-base search, claim review and eligibility evidence screens
  *  have something to show in demo mode. Fictional text only; no company facts. */

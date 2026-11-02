@@ -41,7 +41,11 @@ export const PERMISSIONS: PermDef[] = [
   { key: 'kb.review_claims', area: 'Knowledge base', column: 'Approve', label: 'Confirm or reject extracted company claims' },
   { key: 'drive.admin', area: 'Google Drive', column: 'Administer', label: 'Connect Google Drive, choose the root folder and copy policy' },
   { key: 'drive.folder', area: 'Google Drive', column: 'Create', label: 'Create the Drive folder for an opportunity' },
-  { key: 'drive.link', area: 'Google Drive', column: 'Edit', label: 'Link or copy Drive files to an opportunity' }
+  { key: 'drive.link', area: 'Google Drive', column: 'Edit', label: 'Link or copy Drive files to an opportunity' },
+  // update 5
+  { key: 'outreach.read', area: 'Events & outreach', column: 'Read', label: 'See events, event contacts, pre-leads and cohorts' },
+  { key: 'outreach.edit', area: 'Events & outreach', column: 'Edit', label: 'Add and edit events, contacts, pre-leads and cohorts; upload spreadsheets' },
+  { key: 'outreach.assign', area: 'Events & outreach', column: 'Assign', label: 'Assign contacts and pre-leads to other people (bulk or round-robin)' }
 ];
 export const PERM_KEYS = PERMISSIONS.map(p => p.key);
 
@@ -65,6 +69,9 @@ export function defaultRolePerms(): RolePerm[] {
     if (p === 'drive.folder') allowed = ['CEO', 'CTO', 'VP', 'GM'].includes(role);
     if (p === 'drive.link') allowed = true;
     if (p === 'kb.review_claims') allowed = ['CEO', 'CTO', 'VP'].includes(role);
+    // update-5 permissions (same defaults as update-5.sql)
+    if (p === 'outreach.read' || p === 'outreach.edit') allowed = true;
+    if (p === 'outreach.assign') allowed = ['CEO', 'CTO', 'VP', 'GM'].includes(role);
     let status: RolePerm['status'] = 'Proposed', note: string | null = null;
     if (role === 'VP' && [...RESTRICTED, 'decision.approve', 'opp.reassign'].includes(p)) status = 'Open question';
     if (role === 'GM' && ['decision.approve', 'opp.reassign'].includes(p)) status = 'Open question';
@@ -75,6 +82,7 @@ export function defaultRolePerms(): RolePerm[] {
     if (role === 'BD Executive' && ['opp.claim', 'tasks.claim'].includes(p)) note = 'Whether executives may take available work themselves is not settled.';
     if (p === 'drive.admin') note = 'Connect/disconnect the organisation Google account, choose the root folder and copy policy.';
     if (role === 'BD Executive' && p === 'drive.folder') note = 'Whether executives may create opportunity folders is not settled.';
+    if (role === 'BD Executive' && p === 'outreach.assign') { status = 'Open question'; note = 'Whether executives may hand contacts to others is not settled. They can always take a contact themselves.'; }
     out.push({ org_role: role, permission: p, allowed, status, note, updated_by: null, updated_at: '2026-10-15T00:00:00.000Z' });
   }
   return out;

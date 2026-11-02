@@ -1,4 +1,5 @@
 'use server';
+import { UNLOCK_COOKIE, UNLOCK_HOURS, cookieOptions, signToken } from '@/lib/pin-cookie';
 import { revalidatePath } from 'next/cache';
 import { cookies } from 'next/headers';
 import { redirect } from 'next/navigation';
@@ -567,6 +568,9 @@ export async function criterionAction(fd: FormData) {
 export async function demoActAsAction(fd: FormData) {
   if (!isDemo()) return;
   (await cookies()).set(data.DEMO_AS_COOKIE, str(fd, 'as'), { path: '/', httpOnly: true, sameSite: 'lax' });
+  // demo only: switching the sample user keeps this browser unlocked (the PIN screen is shown once per browser session)
+  const t = await signToken('unlock', str(fd, 'as'), UNLOCK_HOURS * 3600e3);
+  if (t) (await cookies()).set(UNLOCK_COOKIE, t, cookieOptions);
   done();
   redirect(back(fd, '/'));
 }
