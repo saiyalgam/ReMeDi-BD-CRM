@@ -253,7 +253,7 @@ export async function saveCohort(id: number | null, row: Row): Promise<number> {
 
 // ---------------- bulk import (spreadsheet upload with assignment) ----------------
 export type ImportTarget = 'contacts' | 'events' | 'preleads' | 'cohorts';
-export interface OutreachImportResult { ok: boolean; created: number; merged: number; skipped: number; errors: { line: number; reason: string }[]; message: string }
+export interface OutreachImportResult { ok: boolean; created: number; merged: number; skipped: number; errors: { line: number; reason: string }[]; message: string; eventId?: number | null }
 
 /** Insert rows already cleaned in the browser. Duplicates (same email, or same organisation + name) are merged into the
  *  existing contact when `merge` is set, otherwise skipped. Owners are applied with the same rule as a single change. */

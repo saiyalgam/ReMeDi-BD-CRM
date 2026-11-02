@@ -196,3 +196,9 @@ Verification (demo mode): `npx tsc --noEmit` clean, `npm run build` succeeded, `
 Not verified: the live Supabase path (`update-6.sql`, service-role access, the email-link → /set-pin redirect in `/auth/confirm`).
 
 Assumptions: 6-digit PIN; unlock lasts until the browser closes or 12 hours; 5 attempts; PIN reset needs an email sign-in within 15 minutes. These are constants in `lib/pin.ts` and `lib/pin-cookie.ts`.
+
+## Update 7 (2 Nov 2026)
+
+Verification (demo mode, Playwright): build and type check clean, `npm test` 6/6. First visit shows the tour; closing it and reloading does not show it again; six "New" badges shown. `CBR_AI_Conclave_Leads.xlsx` uploaded on the Events page: detected as contacts, header row 4, event name "CBR AI Conclave" taken from the title row, 9 of 12 columns mapped, the other 4 kept in Details, 6 contacts created and linked to the new event. `crm-update-2026-11-02b.json` imported from Settings: 6 new, 1 updated, 1 verified deadline change.
+
+Not verified: `update-7.sql` on live Supabase.

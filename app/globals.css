@@ -714,7 +714,8 @@ input:focus, select:focus, textarea:focus { outline: 1px solid var(--brand); box
 .tbl th { font: 500 12px/16px var(--f-body); letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
 .tbl td { padding-top: 12px; padding-bottom: 12px; }
 .tbl tbody tr:hover td { background: var(--surface-2); }
-.tbl td.clip { max-width: 320px; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; }
+/* keep table-cell layout (a -webkit-box td stacks the row's cells on top of each other) */
+.tbl td.clip { max-width: 320px; overflow-wrap: anywhere; vertical-align: top; }
 .tbl td.acts { white-space: nowrap; text-align: right; }
 .kpis { border-radius: 16px; }
 
@@ -884,3 +885,28 @@ details.card[open] > summary::before { content: '− '; }
 .usermenu-pop { position: absolute; right: 0; top: calc(100% + 8px); z-index: 50; min-width: 240px; background: var(--surface, #fff); border: 1px solid var(--line, #E2E8F0); border-radius: 12px; box-shadow: 0 8px 24px rgba(15, 23, 42, .12); padding: 6px; display: grid; }
 .usermenu-pop a, .usermenu-pop button { display: block; width: 100%; text-align: left; background: none; border: 0; padding: 9px 12px; border-radius: 8px; font: 500 14px/1.3 var(--f-body); color: var(--ink, #0A3A70); cursor: pointer; text-decoration: none; }
 .usermenu-pop a:hover, .usermenu-pop button:hover { background: var(--canvas, #F5F7FA); }
+
+.up-keep { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; margin: 8px 0 4px; font-size: 14px; }
+
+.jsonimp { display: grid; gap: 10px; max-width: 720px; }
+.jsonimp .btn { justify-self: start; }
+
+/* ---------- Update 7: product tour, coach marks, "New" badges ---------- */
+.navlink .lbl { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.newpill { margin-left: 6px; padding: 0 5px; border-radius: 999px; background: #E0261B; color: #fff; font: 700 9px/15px var(--f-body); vertical-align: 1px; letter-spacing: .02em; text-transform: uppercase; }
+.navlink[aria-current="page"] .newpill { background: #fff; color: #E0261B; }
+.tour { position: fixed; inset: 0; z-index: 1000; }
+.tour-dim { position: fixed; inset: 0; background: rgba(10, 20, 40, .55); }
+.tour-spot { position: fixed; border-radius: 12px; box-shadow: 0 0 0 9999px rgba(10, 20, 40, .55); outline: 2px solid #fff; transition: all .25s ease; pointer-events: none; }
+.tour-card { position: fixed; width: min(360px, calc(100vw - 32px)); background: var(--surface, #fff); color: var(--text, #101828); border-radius: 16px; box-shadow: 0 20px 48px rgba(10, 20, 40, .28); padding: 18px 20px 16px; display: grid; gap: 10px; }
+.tour-card.center { width: min(440px, calc(100vw - 32px)); }
+.tour-card h3 { font: 700 18px/1.3 var(--f-display, var(--f-body)); margin: 0; }
+.tour-card p { margin: 0; font-size: 14px; line-height: 1.55; color: var(--muted, #475467); }
+.tour-top { display: flex; justify-content: space-between; align-items: center; }
+.tour-tag { font: 600 11px/1 var(--f-body); text-transform: uppercase; letter-spacing: .06em; color: var(--brand, #0E4C92); }
+.tour-x { background: none; border: 0; font-size: 22px; line-height: 1; color: var(--muted, #667085); cursor: pointer; padding: 2px 6px; }
+.tour-dots { display: flex; gap: 6px; }
+.tour-dots i { width: 7px; height: 7px; border-radius: 50%; background: var(--line, #E2E8F0); }
+.tour-dots i.done { background: #A6C7FF; } .tour-dots i.on { background: var(--brand, #0E4C92); width: 18px; border-radius: 4px; }
+.tour-actions { display: flex; justify-content: space-between; gap: 8px; margin-top: 4px; }
+@media (prefers-reduced-motion: reduce) { .tour-spot { transition: none; } }

@@ -123,7 +123,16 @@ To install it on a live CRM:
 4. Review the open policy questions on that screen with leadership.
 6. Optional: import the Excel pipeline under **Settings → Spreadsheet import**.
 
-New installs: run `schema.sql`, `update-2.sql`, `update-3.sql`, `update-4.sql`, `update-5.sql`, then `update-6.sql`.
+New installs: run `schema.sql`, `update-2.sql`, `update-3.sql`, `update-4.sql`, `update-5.sql`, `update-6.sql`, then `update-7.sql`.
+
+## Update 7 (November 2026): product tour, smarter uploads, JSON lead files
+
+- **Product tour on first login.** After this release everyone sees a one-minute guided tour once (spotlight coach marks on the Lead Tracker, search, Quick Add, follow-ups, Events, People, Pre-Leads and the account menu). Finishing or skipping it is saved per person in `user_onboarding`, so it does not come back on the next login or another device. **Account menu → Take the product tour again** replays it.
+- **"New" badges (feature discovery).** New pages carry a red "New" badge in the menu until the person opens them.
+- **Uploads understand more sheets.** The uploader finds the header row by itself (title rows above it are fine), recognises whether the file lists events or people (a sheet like "CBR AI Conclave" with Name, Designation, Organization, Phone / Mobile, Email, Query / Interest Raised, Suggested Next Step is imported as contacts), matches columns with looser names, and keeps every column it can't map (Alt. Phone, Website, Address, …) in the record's details, so nothing is lost. When importing people from the Events page, choose an existing event or let it create one named after the sheet's title.
+- **JSON lead files from the screen.** Settings → Import → "Upload a lead file (.json)" imports reviewed files like `crm-update-2026-11-02b.json` without the ingest token. "Add new only" for everyone with Add opportunities; refreshing existing leads needs "Verify leads".
+
+To install: run `supabase/update-7.sql` in Supabase (after `update-6.sql`), then push.
 
 ## Update 6 (November 2026): PIN unlock (TPIN)
 

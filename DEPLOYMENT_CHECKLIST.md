@@ -1,3 +1,13 @@
+# Deployment checklist — update 7 (product tour, uploads, JSON files)
+
+- [ ] Supabase → SQL Editor → run `supabase/update-7.sql`. Check: `user_onboarding` exists with RLS on and three "own row" policies.
+- [ ] Push and let Vercel deploy.
+- [ ] Sign in: the product tour appears once. Skip it, reload: it does not come back. Account menu → "Take the product tour again" replays it.
+- [ ] Events → Upload from Excel → choose `CBR_AI_Conclave_Leads.xlsx` → it says "list of people met", header row 4, new event "CBR AI Conclave" → Import 6 → Open the event.
+- [ ] Settings → Import → Upload a lead file (.json) → `crm-update-2026-11-02b.json` → import.
+
+---
+
 # Deployment checklist — update 6 (PIN unlock)
 
 - [ ] Update 5 below is done.

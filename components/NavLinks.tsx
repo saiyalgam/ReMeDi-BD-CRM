@@ -1,12 +1,16 @@
 'use client';
 import Link from 'next/link';
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import { usePathname, useSearchParams } from 'next/navigation';
+import { featureSeenAction } from '@/app/onboarding-actions';
 
-export interface NavItem { href: string; label: string; count?: number; color?: string; icon?: ReactNode; match?: string; alert?: boolean }
+export interface NavItem { href: string; label: string; count?: number; color?: string; icon?: ReactNode; match?: string; alert?: boolean;
+  /** data-tour anchor for the product tour */ tour?: string;
+  /** feature key: shows a "New" badge until the person opens it */ feature?: string; isNew?: boolean }
 
 export function NavLinks({ title, items }: { title: string; items: NavItem[] }) {
   const path = usePathname();
+  const [opened, setOpened] = useState<string[]>([]); // hide a "New" badge as soon as it is clicked
   const sp = useSearchParams();
   const current = path + (sp.toString() ? '?' + sp.toString() : '');
   const isActive = (it: NavItem) => {
@@ -20,8 +24,9 @@ export function NavLinks({ title, items }: { title: string; items: NavItem[] }) 
     <nav className="navgroup" aria-label={title}>
       <small>{title}</small>
       {items.map(it => (
-        <Link key={it.href} href={it.href} className="navlink" aria-current={isActive(it) ? 'page' : undefined}>
-          <span className="lbl">{it.icon}{it.color ? <i className="dot" style={{ background: it.color }} aria-hidden="true" /> : null}{it.label}</span>
+        <Link key={it.href} href={it.href} className="navlink" aria-current={isActive(it) ? 'page' : undefined} data-tour={it.tour}
+          onClick={it.isNew && it.feature ? () => { setOpened(o => [...o, it.feature!]); void featureSeenAction(it.feature!); } : undefined}>
+          <span className="lbl">{it.icon}{it.color ? <i className="dot" style={{ background: it.color }} aria-hidden="true" /> : null}{it.label}{it.isNew && !opened.includes(it.feature || '') ? <span className="newpill">New</span> : null}</span>
           {it.count != null ? <span className={`count${it.alert ? ' alert' : ''}`}>{it.count}{it.alert ? ' due' : ''}</span> : null}
         </Link>
       ))}

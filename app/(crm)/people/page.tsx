@@ -51,7 +51,7 @@ export default async function PeoplePage({ searchParams }: { searchParams: SP })
       {canEdit ? <>
         <details className="card" id="add" open={sp.add === '1'}><summary><h2 className="inline-h">Add a contact</h2></summary><AddContact back="/people" members={members} canAssign={canAssign} meId={me} /></details>
         <section className="card" id="upload"><header><h2>Upload contacts from Excel</h2><p>For example the “Personal Leads” sheet (Organizations, PoCs, Email Addresses, Updates). To attach contacts to an event, upload them from that event’s page.</p></header>
-          <OutreachUpload target="contacts" people={people} me={me} canAssign={canAssign} existingKeys={contacts.map(c => c.email ? 'e:' + c.email.toLowerCase() : 'o:' + String(c.organisation || '').toLowerCase() + '|' + String(c.name || '').toLowerCase())} />
+          <OutreachUpload target="contacts" events={events.map(e => ({ id: e.id, name: e.name }))} people={people} me={me} canAssign={canAssign} existingKeys={contacts.map(c => c.email ? 'e:' + c.email.toLowerCase() : 'o:' + String(c.organisation || '').toLowerCase() + '|' + String(c.name || '').toLowerCase())} />
         </section>
       </> : null}
     </>

@@ -24,6 +24,8 @@ export interface DemoStore {
   refSeq: number; seq: number;
   // update 6: TPIN hashes (demo only; production keeps them in user_pins)
   pins?: { user_id: string; pin_hash: string; failed_count: number; locked: boolean; updated_at: string }[];
+  // update 7: first-login product tour and "New" badges
+  onboarding?: { user_id: string; tour_version: string | null; tour_done_at: string | null; seen_features: string[] }[];
   // update 4 (optional so an older demo file on disk still loads)
   kbEvidence?: KbEvidence[]; claims?: KbClaim[]; driveFolders?: DriveFolder[]; driveFiles?: DriveFile[]; settings?: IntegrationSettings;
   // update 5 (seeded on first use when missing)

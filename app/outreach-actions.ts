@@ -141,7 +141,16 @@ export async function outreachImportAction(_prev: out.OutreachImportResult | nul
   try { rows = JSON.parse(str(fd, 'rows') || '[]'); } catch { return { ok: false, created: 0, merged: 0, skipped: 0, errors: [], message: 'The rows could not be read. Try again.' }; }
   if (!Array.isArray(rows) || !rows.length) return { ok: false, created: 0, merged: 0, skipped: 0, errors: [], message: 'Nothing to import.' };
   try {
-    const res = await out.importOutreach(target, rows, { eventId: Number(str(fd, 'event_id')) || null, merge: str(fd, 'merge') === '1' });
+    let eventId = Number(str(fd, 'event_id')) || null;
+    // Contacts from a sheet like "CBR AI Conclave": create that event first, then attach everyone to it.
+    const newEvent = str(fd, 'new_event_name').trim();
+    let made = '';
+    if (target === 'contacts' && !eventId && newEvent) {
+      eventId = await out.saveBdEvent(null, { name: newEvent.slice(0, 300), status: 'Attended', importance: 'Medium' });
+      made = ` Created the event “${newEvent}” and linked everyone to it.`;
+    }
+    const res = await out.importOutreach(target, rows, { eventId, merge: str(fd, 'merge') === '1' });
+    if (made) { res.message += made; res.eventId = eventId; }
     revalidatePath('/', 'layout');
     return res;
   } catch (e) { return { ok: false, created: 0, merged: 0, skipped: 0, errors: [], message: msgOf(e) }; }

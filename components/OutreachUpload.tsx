@@ -12,15 +12,15 @@ interface FieldDef { key: string; label: string; kind: Kind; required?: boolean;
 
 const FIELDS: Record<ImportTarget, FieldDef[]> = {
   contacts: [
-    { key: 'name', label: 'Person', kind: 'text', guess: /^(name|pocs?|contact( name)?|person)$/i },
-    { key: 'organisation', label: 'Organisation', kind: 'text', guess: /^(org|organi[sz]ations?|company|institution)$/i },
-    { key: 'title', label: 'Title / designation', kind: 'text', guess: /^(title|designation|role|position)$/i },
-    { key: 'phone', label: 'Phone', kind: 'phone', guess: /^(phone|mobile|contact no\.?|whatsapp)$/i },
-    { key: 'email', label: 'Email', kind: 'email', guess: /^e-?mail( address(es)?)?$/i },
-    { key: 'met_on', label: 'Date met', kind: 'date', guess: /^(date|date met|met on)$/i },
-    { key: 'meeting_status', label: 'Meeting status', kind: 'meeting', guess: /^(meeting\??|status|meeting status)$/i },
-    { key: 'details', label: 'Details / discussion', kind: 'long', guess: /^(details|notes|discussion|updates?)$/i },
-    { key: 'next_action', label: 'Next action', kind: 'long', guess: /^(next( action| step)?|follow ?up|action)$/i },
+    { key: 'name', label: 'Person', kind: 'text', guess: /^(full )?(name|pocs?|contact( person| name)?|person( met)?|attendee|delegate)$/i },
+    { key: 'organisation', label: 'Organisation', kind: 'text', guess: /^(org|organi[sz]ations?( name)?|company( name)?|institution|institute|firm|affiliation|hospital|university)$/i },
+    { key: 'title', label: 'Title / designation', kind: 'text', guess: /^(title|designation|role|position|job title)$/i },
+    { key: 'phone', label: 'Phone', kind: 'phone', guess: /^(phone|mobile|cell|contact( no| number)?|phone mobile|mobile phone|phone number|mobile number|whatsapp)$/i },
+    { key: 'email', label: 'Email', kind: 'email', guess: /^(e ?mail|email id|email address(es)?|mail)$/i },
+    { key: 'met_on', label: 'Date met', kind: 'date', guess: /^(date|date met|met on|meeting date)$/i },
+    { key: 'meeting_status', label: 'Meeting status', kind: 'meeting', guess: /^(meeting|status|meeting status|met)$/i },
+    { key: 'details', label: 'Details / discussion', kind: 'long', guess: /^(details|notes?|remarks?|discussion|updates?|comments?|query( interest( raised)?)?|interest( raised)?|requirement|ask)$/i },
+    { key: 'next_action', label: 'Next action', kind: 'long', guess: /^((suggested )?next( action| step)?s?|follow ?up( action)?|action( item)?)$/i },
     { key: 'owner', label: 'Owner (name)', kind: 'owner', guess: /^(owner|lead owner|assigned to)$/i },
     { key: 'introducer', label: 'Introducer / warm intro via', kind: 'text', guess: /^(introducer|intro(duced)? by|via|referred by)$/i }
   ],
@@ -52,6 +52,30 @@ const FIELDS: Record<ImportTarget, FieldDef[]> = {
   ]
 };
 const TARGET_LABEL: Record<ImportTarget, string> = { contacts: 'contacts', events: 'events', preleads: 'pre-leads', cohorts: 'cohorts' };
+const TARGET_LONG: Record<ImportTarget, string> = { contacts: 'People met (contacts / PoCs)', events: 'Events or conferences', preleads: 'Pre-leads', cohorts: 'Cohorts / programmes' };
+/** Where columns that are not mapped end up, so nothing in the sheet is lost. */
+const NOTES_FIELD: Record<ImportTarget, string> = { contacts: 'details', events: 'purpose', preleads: 'opportunity', cohorts: 'updates' };
+/** "Phone / Mobile" → "phone mobile", "Query / Interest Raised" → "query interest raised" */
+const norm = (h: unknown) => String(h ?? '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+const SERIAL = /^(s ?no|sr ?no|sl ?no|serial( no)?|no|sno|#|)$/;
+/** How well a header row fits each kind of list (number of columns recognised). */
+function fitScore(hdr: unknown[], t: ImportTarget): number { return FIELDS[t].filter(f => hdr.some(h => f.guess.test(norm(h)))).length; }
+/** Find the header row: the first of the top 30 rows with 3+ filled cells that matches the most known column names. */
+function findHeader(rows: unknown[][], targets: ImportTarget[]): number {
+  let best = 0, bestScore = -1;
+  for (let i = 0; i < Math.min(rows.length, 30); i++) {
+    const r = rows[i] || [];
+    if (r.filter(c => String(c ?? '').trim()).length < 2) continue;
+    const sc = Math.max(...targets.map(t => fitScore(r, t)));
+    if (sc > bestScore) { best = i; bestScore = sc; }
+  }
+  return best;
+}
+/** A title in the rows above the header (e.g. "CBR AI Conclave"), used to name a new event. */
+function sheetTitle(rows: unknown[][], headerRow: number, fallback: string): string {
+  for (let i = 0; i < headerRow; i++) { const cells = (rows[i] || []).map(c => String(c ?? '').trim()).filter(Boolean); if (cells.length === 1 && cells[0]!.length <= 120) return cells[0]!; }
+  return fallback;
+}
 
 function isoDate(v: string): string | null {
   const s = v.trim(); if (!s) return null;
@@ -67,8 +91,18 @@ const importance = (v: string) => /must/i.test(v) ? 'Must' : /high/i.test(v) ? '
 
 export interface Person { id: string; name: string; email: string }
 
-export function OutreachUpload({ target, eventId, people, me, canAssign, existingKeys }: { target: ImportTarget; eventId?: number | null; people: Person[]; me: string; canAssign: boolean; existingKeys?: string[] }) {
+export function OutreachUpload({ target: initialTarget, targets, eventId, events, people, me, canAssign, existingKeys }: {
+  target: ImportTarget; targets?: ImportTarget[]; eventId?: number | null; events?: { id: number; name: string }[];
+  people: Person[]; me: string; canAssign: boolean; existingKeys?: string[];
+}) {
+  const allowed = targets && targets.length ? targets : [initialTarget];
+  const [target, setTarget] = useState<ImportTarget>(initialTarget);
   const fields = FIELDS[target];
+  const [fileName, setFileName] = useState('');
+  const [keepOthers, setKeepOthers] = useState(true);
+  const [linkEvent, setLinkEvent] = useState<string>(eventId ? String(eventId) : 'new');
+  const [newEventName, setNewEventName] = useState('');
+  const [detected, setDetected] = useState<ImportTarget | null>(null);
   const [sheets, setSheets] = useState<Sheet[] | null>(null);
   const [sheetIx, setSheetIx] = useState(0);
   const [headerRow, setHeaderRow] = useState(0);
@@ -84,20 +118,29 @@ export function OutreachUpload({ target, eventId, people, me, canAssign, existin
   const sheet = sheets?.[sheetIx];
   const header = sheet?.rows[headerRow] || [];
 
-  const pickSheet = (all: Sheet[], ix: number) => {
+  const pickSheet = (all: Sheet[], ix: number, name = fileName) => {
     const rows = all[ix]!.rows;
-    let h = 0;
-    for (let i = 0; i < Math.min(rows.length, 30); i++) {
-      const r = (rows[i] || []).map(c => String(c || '').trim());
-      if (r.filter(Boolean).length >= 2 && fields.some(f => r.some(c => f.guess.test(c)))) { h = i; break; }
-    }
-    setSheetIx(ix); setHeaderRow(h); setMap(guess(rows[h] || []));
+    const h = findHeader(rows, allowed);
+    // Which kind of list is this? Pick the allowed kind whose column names match best.
+    const scores = allowed.map(t => [t, fitScore(rows[h] || [], t)] as const).sort((a, b) => b[1] - a[1]);
+    const best = scores[0]![1] > (scores.find(x => x[0] === target)?.[1] ?? 0) ? scores[0]![0] : target;
+    setDetected(best !== initialTarget ? best : null);
+    setTarget(best);
+    setSheetIx(ix); setHeaderRow(h); setMap(guessFor(best, rows[h] || []));
+    setNewEventName(sheetTitle(rows, h, name.replace(/\.(xlsx|csv)$/i, '').replace(/[_-]+/g, ' ').replace(/\bleads?\b/i, '').trim()));
   };
-  const guess = (hdr: string[]) => {
+  const guessFor = (t: ImportTarget, hdr: unknown[]) => {
     const m: Record<string, number | undefined> = {};
-    hdr.forEach((c, i) => { const t = String(c || '').trim(); for (const f of fields) if (m[f.key] === undefined && f.guess.test(t)) { m[f.key] = i; break; } });
+    const used = new Set<number>();
+    // exact matches first, then the first column that matches each field
+    for (const f of FIELDS[t]) hdr.forEach((c, i) => { if (m[f.key] === undefined && !used.has(i) && f.guess.test(norm(c))) { m[f.key] = i; used.add(i); } });
     return m;
   };
+  const guess = (hdr: unknown[]) => guessFor(target, hdr);
+  const switchTarget = (t: ImportTarget) => { setTarget(t); if (sheet) setMap(guessFor(t, sheet.rows[headerRow] || [])); };
+  /** Columns in the sheet that are not mapped to a CRM field (serial-number columns are ignored). */
+  const otherCols = (sheet?.rows[headerRow] || []).map((h, i) => ({ i, h: String(h ?? '').trim() || `Column ${i + 1}` }))
+    .filter(c => !Object.values(map).includes(c.i) && !SERIAL.test(norm(c.h === `Column ${c.i + 1}` ? '' : c.h)) && (sheet?.rows || []).slice(headerRow + 1).some(r => String((r || [])[c.i] ?? '').trim()));
 
   const ownerOf = (v: string): string | null => {
     const s = v.trim().toLowerCase(); if (!s) return null;
@@ -135,6 +178,10 @@ export function OutreachUpload({ target, eventId, people, me, canAssign, existin
         else if (f.kind === 'importance') row[f.key] = importance(v);
         else row[f.key] = v ? (row[f.key] ? row[f.key] + '\n' + v : v) : (row[f.key] ?? null);
       }
+      if (keepOthers) {
+        const extra = otherCols.map(c => [c.h, String(r[c.i] ?? '').trim().replace(/\.0$/, '')] as const).filter(([, v]) => v);
+        if (extra.length) { const k = NOTES_FIELD[target]; row[k] = [row[k], extra.map(([h, v]) => `${h}: ${v}`).join('\n')].filter(Boolean).join('\n'); }
+      }
       if (target === 'cohorts') row.status = cohortStatus(String(row.updates || ''));
       for (const f of fields) if (f.required && !row[f.key]) problems.push(`${f.label} is empty`);
       if (target === 'contacts' && !row.name && !row.organisation) problems.push('Needs a person or an organisation');
@@ -144,12 +191,12 @@ export function OutreachUpload({ target, eventId, people, me, canAssign, existin
         dup = seen.has(key); seen.add(key);
         if (!row.met_on && eventId) row.met_on = null;
         row.followup_on = plus(followDays);
-        row.source = eventId ? 'Event' : 'Spreadsheet upload';
+        row.source = eventId || linkEvent ? 'Event' : 'Spreadsheet upload';
       }
       out.push({ line: i + 1, row, problems, dup });
     }
     return out;
-  }, [sheet, headerRow, map, fields, people, existingKeys, target, eventId, followDays]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [sheet, headerRow, map, fields, people, existingKeys, target, eventId, followDays, keepOthers, linkEvent]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const assignable = target === 'contacts' || target === 'preleads' || target === 'cohorts';
   const finalRows = parsed.filter(p => !(fields.some(f => f.required) && p.problems.some(x => x.endsWith('is empty')))).map((p, i) => {
@@ -164,12 +211,14 @@ export function OutreachUpload({ target, eventId, people, me, canAssign, existin
     return row;
   });
   const bad = parsed.length - finalRows.length;
+  const previewFields = (() => { const m = fields.filter(f => map[f.key] !== undefined); return (m.length ? m : fields).slice(0, 6); })();
   const dups = parsed.filter(p => p.dup).length;
 
   const onFile = async (file: File | undefined) => {
     setFileErr(''); setSheets(null);
     if (!file) return;
-    try { const all = (await readSpreadsheet(file)).filter(s => s.rows.some(r => r && r.some(c => String(c || '').trim()))); if (!all.length) throw new Error('The file has no data.'); setSheets(all); pickSheet(all, 0); }
+    setFileName(file.name);
+    try { const all = (await readSpreadsheet(file)).filter(s => s.rows.some(r => r && r.some(c => String(c || '').trim()))); if (!all.length) throw new Error('The file has no data.'); setSheets(all); pickSheet(all, 0, file.name); }
     catch (e) { setFileErr(e instanceof Error ? e.message : String(e)); }
   };
 
@@ -191,6 +240,26 @@ export function OutreachUpload({ target, eventId, people, me, canAssign, existin
 
       {sheets && sheet ? (
         <>
+          {detected ? <div className="note ok" role="status">This file looks like a list of <b>{TARGET_LONG[detected]}</b>, so it will be imported as {TARGET_LABEL[detected]}. Change it below if that is wrong.</div> : null}
+          <div className="up-row">
+            {allowed.length > 1 ? (
+              <label className="fld">This file is a list of
+                <select value={target} onChange={e => switchTarget(e.target.value as ImportTarget)}>{allowed.map(t => <option key={t} value={t}>{TARGET_LONG[t]}</option>)}</select>
+              </label>
+            ) : null}
+            {target === 'contacts' && !eventId ? (
+              <label className="fld">Met at
+                <select value={linkEvent} onChange={e => setLinkEvent(e.target.value)}>
+                  <option value="new">A new event…</option>
+                  <option value="">No event (personal network)</option>
+                  {(events || []).map(ev => <option key={ev.id} value={ev.id}>{ev.name}</option>)}
+                </select>
+              </label>
+            ) : null}
+            {target === 'contacts' && !eventId && linkEvent === 'new' ? (
+              <label className="fld">New event name<input type="text" value={newEventName} onChange={e => setNewEventName(e.target.value)} placeholder="e.g. CBR AI Conclave" /></label>
+            ) : null}
+          </div>
           <div className="up-row">
             {sheets.length > 1 ? (
               <label className="fld">Sheet
@@ -213,6 +282,10 @@ export function OutreachUpload({ target, eventId, people, me, canAssign, existin
               </label>
             ))}
           </fieldset>
+          {otherCols.length ? (
+            <label className="chk up-keep"><input type="checkbox" checked={keepOthers} onChange={e => setKeepOthers(e.target.checked)} />
+              Keep the other {otherCols.length} column{otherCols.length > 1 ? 's' : ''} in {NOTES_FIELD[target] === 'details' ? 'Details' : NOTES_FIELD[target]}: <span className="muted">{otherCols.map(c => c.h).join(', ')}</span></label>
+          ) : null}
 
           <div className="up-check">
             <b>{parsed.length} rows found</b> · {finalRows.length} ready{bad ? ` · ${bad} missing a required field` : ''}{dups ? ` · ${dups} look like existing records` : ''}
@@ -220,12 +293,12 @@ export function OutreachUpload({ target, eventId, people, me, canAssign, existin
           </div>
           <div className="tbl-wrap up-preview">
             <table className="tbl">
-              <thead><tr><th>Line</th>{fields.slice(0, 6).map(f => <th key={f.key}>{f.label}</th>)}<th>Check</th></tr></thead>
+              <thead><tr><th>Line</th>{previewFields.map(f => <th key={f.key}>{f.label}</th>)}<th>Check</th></tr></thead>
               <tbody>
                 {parsed.slice(0, 40).map(p => (
                   <tr key={p.line}>
                     <td className="num">{p.line}</td>
-                    {fields.slice(0, 6).map(f => <td key={f.key} className="clip">{f.kind === 'owner' ? (people.find(x => x.id === p.row[f.key])?.name || '') : (p.row[f.key] || '')}</td>)}
+                    {previewFields.map(f => <td key={f.key} className="clip">{f.kind === 'owner' ? (people.find(x => x.id === p.row[f.key])?.name || '') : (p.row[f.key] || '')}</td>)}
                     <td>{p.dup ? <span className="badge b-info">Existing</span> : <span className="badge b-ok">New</span>} {p.problems.length ? <span className="badge b-q" title={p.problems.join('\n')}>{p.problems.length} note{p.problems.length > 1 ? 's' : ''}</span> : null}</td>
                   </tr>
                 ))}
@@ -255,7 +328,8 @@ export function OutreachUpload({ target, eventId, people, me, canAssign, existin
 
           <form action={act} className="up-go">
             <input type="hidden" name="target" value={target} />
-            <input type="hidden" name="event_id" value={eventId || ''} />
+            <input type="hidden" name="event_id" value={eventId || (target === 'contacts' && linkEvent !== 'new' ? linkEvent : '')} />
+            <input type="hidden" name="new_event_name" value={!eventId && target === 'contacts' && linkEvent === 'new' ? newEventName : ''} />
             <input type="hidden" name="merge" value={merge ? '1' : '0'} />
             <input type="hidden" name="rows" value={JSON.stringify(finalRows)} />
             <button className="btn btn-primary" type="submit" disabled={busy || !finalRows.length}>{busy ? 'Importing…' : `Import ${finalRows.length} ${TARGET_LABEL[target]}`}</button>
@@ -266,6 +340,7 @@ export function OutreachUpload({ target, eventId, people, me, canAssign, existin
       {state ? (
         <div className={`note ${state.ok ? 'ok' : 'err'}`} role={state.ok ? 'status' : 'alert'}>
           {state.message}
+          {state.eventId ? <> <a href={`/events/${state.eventId}?tab=contacts`}>Open the event</a></> : null}
           {state.errors.length ? <> <button type="button" className="btn-link" onClick={errorsCsv}>Download the problems (CSV)</button></> : null}
         </div>
       ) : null}

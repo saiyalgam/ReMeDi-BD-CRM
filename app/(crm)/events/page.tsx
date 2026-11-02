@@ -82,8 +82,8 @@ export default async function EventsPage({ searchParams }: { searchParams: SP })
 
       {canEdit ? (
         <section className="card" id="upload" aria-labelledby="up-h">
-          <header><h2 id="up-h">Upload events from Excel</h2><p>For example the “Conferences to Participate” sheet. Columns are matched automatically; check them before importing.</p></header>
-          <OutreachUpload target="events" people={people} me={session!.user.id} canAssign={can(session, 'outreach.assign')} />
+          <header><h2 id="up-h">Upload from Excel</h2><p>A list of events (like “Conferences to Participate”) or the people you met at one (like the CBR AI Conclave sheet). The CRM recognises which it is, finds the header row and matches the columns; you can change any of it before importing.</p></header>
+          <OutreachUpload target="events" targets={['events', 'contacts']} events={events.map(e => ({ id: e.id, name: e.name }))} people={people} me={session!.user.id} canAssign={can(session, 'outreach.assign')} existingKeys={contacts.map(c => c.email ? 'e:' + c.email.toLowerCase() : 'o:' + String(c.organisation || '').toLowerCase() + '|' + String(c.name || '').toLowerCase())} />
         </section>
       ) : null}
     </>
