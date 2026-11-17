@@ -19,6 +19,7 @@ import { getPin } from '@/lib/pin';
 import { pinSecret } from '@/lib/pin-cookie';
 import { ProductTour, ReplayTourButton, type TourStep } from '@/components/ProductTour';
 import { getOnboarding, TOUR_VERSION } from '@/lib/onboarding';
+import { focusLeads } from '@/lib/focus';
 
 export default async function CrmLayout({ children }: { children: React.ReactNode }) {
   await connection();
@@ -49,6 +50,10 @@ export default async function CrmLayout({ children }: { children: React.ReactNod
   const openTaskLeads = new Set(tasks.filter(t => t.lead_id && (t.status === 'Open' || t.status === 'In progress')).map(t => t.lead_id));
   const health = open.length ? Math.round(100 * open.filter(l => l.next_followup || l.next_step || openTaskLeads.has(l.id)).length / open.length) : 0;
   const outreach = can(session, 'outreach.read');
+  // Quiet menu: numbers only where someone has to act, never the size of the whole pipeline.
+  const focusN = focusLeads(leads).top.length;
+  const approvals = leads.filter(l => l.approval_status === 'Pending' && isOpen(l)).length;
+  const myDueTasks = tasks.filter(t => t.assignee === me && (t.status === 'Open' || t.status === 'In progress') && t.due_on && t.due_on <= today).length;
 
   return (
     <div className="shell v5">
@@ -61,14 +66,14 @@ export default async function CrmLayout({ children }: { children: React.ReactNod
         <Suspense>
           <NavLinks title="Main menu" items={[
             { href: '/', label: 'Dashboard', icon: <Icon name="home" /> },
-            { href: '/tracker', label: 'Lead Tracker', count: open.length, icon: <Icon name="board" />, match: '/tracker', tour: 'nav-tracker', feature: 'tracker', isNew: isNew('tracker') },
+            { href: '/tracker', label: 'Lead Tracker', count: focusN || undefined, icon: <Icon name="board" />, match: '/tracker', tour: 'nav-tracker', feature: 'tracker', isNew: isNew('tracker') },
             { href: '/followups', label: 'My follow-ups', count: due || undefined, alert: due > 0, icon: <Icon name="bell" />, match: '/followups', feature: 'followups', isNew: isNew('followups') },
             ...(outreach ? [
               { href: '/pre-leads', label: 'Pre-Leads', icon: <Icon name="flag" />, match: '/pre-leads', tour: 'nav-preleads', feature: 'preleads', isNew: isNew('preleads') },
-              { href: '/events', label: 'Events', count: upcoming || undefined, icon: <Icon name="calendar" />, match: '/events', tour: 'nav-events', feature: 'events', isNew: isNew('events') },
+              { href: '/events', label: 'Events', icon: <Icon name="calendar" />, match: '/events', tour: 'nav-events', feature: 'events', isNew: isNew('events') },
               { href: '/people', label: 'People & PoCs', icon: <Icon name="users" />, match: '/people', tour: 'nav-people', feature: 'people', isNew: isNew('people') }
             ] : []),
-            { href: '/review', label: 'Review queue', count: reviewCount, icon: <Icon name="inbox" />, match: '/review' },
+            { href: '/review', label: 'Review queue', count: approvals || undefined, alert: approvals > 0, icon: <Icon name="inbox" />, match: '/review' },
             { href: '/leads?type=tender', label: 'Tenders', icon: <Icon name="list" /> },
             { href: '/leads?type=grant,csr', label: 'Grants & CSR', icon: <Icon name="award" /> },
             ...(outreach ? [{ href: '/cohorts', label: 'Cohorts', icon: <Icon name="target" />, match: '/cohorts', feature: 'cohorts', isNew: isNew('cohorts') }] : []),
@@ -76,9 +81,9 @@ export default async function CrmLayout({ children }: { children: React.ReactNod
             ...(can(session, 'reports.read') ? [{ href: '/reports', label: 'Reports', icon: <Icon name="chart" />, match: '/reports' }] : [])
           ]} />
           <NavLinks title="Pipeline detail" items={[
-            { href: '/leads', label: 'All opportunities', count: open.length, icon: <Icon name="list" /> },
-            { href: '/intake', label: 'Crawler intake', count: open.filter(l => l.verification === 'Unverified').length, icon: <Icon name="upload" />, match: '/intake' },
-            { href: '/tasks', label: 'Tasks', count: myTasks, icon: <Icon name="check" />, match: '/tasks' },
+            { href: '/leads', label: 'All opportunities', icon: <Icon name="list" /> },
+            { href: '/intake', label: 'Crawler intake', icon: <Icon name="upload" />, match: '/intake' },
+            { href: '/tasks', label: 'Tasks', count: myDueTasks || undefined, alert: myDueTasks > 0, icon: <Icon name="check" />, match: '/tasks' },
             { href: '/my', label: 'My relationships', icon: <Icon name="user" />, match: '/my' },
             { href: '/knowledge', label: 'Knowledge base', icon: <Icon name="book" />, match: '/knowledge' }
           ]} />
@@ -127,7 +132,7 @@ export default async function CrmLayout({ children }: { children: React.ReactNod
           </details>
           <div className="topright">
             <Link href="/followups" className="iconbtn" aria-label={`My follow-ups: ${due} due`} title="My follow-ups" data-tour="bell">
-              <Icon name="bell" />{due ? <span className="dotcount">{due > 99 ? '99+' : due}</span> : null}
+              <Icon name="bell" />{due ? <span className="dotcount">{due > 9 ? '9+' : due}</span> : null}
             </Link>
             <ThemeToggle />
             <div className="userchip">

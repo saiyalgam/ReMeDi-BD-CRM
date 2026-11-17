@@ -6,6 +6,7 @@ import { getSession, lastIngest, listActivity, listLeads, listMembers } from '@/
 import { listDeadlines, listDocs, listRelationships, listRequirements, listTasks } from '@/lib/data-ext';
 import { ago, daysLeft, fmtDate, fmtDateTime, nameOf, todayIST } from '@/lib/format';
 import { dashboard, overview } from '@/lib/views';
+import { FOCUS_LIMIT, focusLeads, inProgress } from '@/lib/focus';
 import type { Activity } from '@/lib/types';
 
 export const metadata = { title: 'Dashboard' };
@@ -32,6 +33,10 @@ export default async function Dashboard() {
   const myRels = rels.filter(r => r.owner === session?.user.id && r.status !== 'Closed')
     .sort((a, b) => String(a.next_followup || '9999').localeCompare(String(b.next_followup || '9999'))).slice(0, 5);
   const needYou = d.attention.filter(a => a.lead.approval_status === 'Pending').length;
+  // Focus: the short list to decide on. Everything else is one click away, not on the first screen.
+  const focus = focusLeads(leads);
+  const working = leads.filter(inProgress).length;
+  const memberName = (id: string | null) => (id ? members.find(m => m.id === id)?.full_name || 'Former member' : 'Unassigned');
 
   return (
     <>
@@ -39,8 +44,8 @@ export default async function Dashboard() {
         <div>
           <div className="eyebrow">{fmtDate(todayIST())}</div>
           <h1>{greet}{firstName ? `, ${firstName}` : ''}.</h1>
-          <p>{d.attention.length ? <>{d.attention.length} {d.attention.length === 1 ? 'opportunity needs' : 'opportunities need'} attention{needYou ? <>, {needYou} waiting for an approval decision</> : null}.</> : 'Nothing urgent needs a decision right now.'}
-            {' '}{run ? <>Last crawler delivery {ago(run.run_at)} ({run.inserted} new{run.updated ? `, ${run.updated} updated` : ''}).</> : 'The crawler has not sent any leads yet.'}</p>
+          <p>{focus.top.length ? <><b>{focus.top.length} qualified {focus.top.length === 1 ? 'lead' : 'leads'} to decide on</b>{focus.top.some(l => l.approval_status === 'Pending') ? <>, {focus.top.filter(l => l.approval_status === 'Pending').length} waiting for approval</> : null}{working ? <> · {working} already in progress</> : null}.</> : 'No qualified leads need a decision right now.'}
+            {' '}<span className="muted">{focus.parked + focus.more ? `${focus.parked + focus.more} other open leads are parked in All opportunities and Crawler intake.` : ''}</span></p>
         </div>
         <div className="inline">
           <ExportMenu kind="pipeline" params={{ show: 'open' }} canExport={can(session, 'opp.export')} label="Export / print" />
@@ -49,6 +54,47 @@ export default async function Dashboard() {
         </div>
       </div>
 
+      <section className="card focus-card" aria-labelledby="focus-h">
+        <header><div><h2 id="focus-h">Your top {FOCUS_LIMIT} to decide</h2><p>Open leads verified by the team or scoring {'≥'} 60, not expired, not a published skip. Approvals first, then priority, fit and closing date.</p></div><Link href="/tracker">Lead Tracker</Link></header>
+        {focus.top.length ? (
+          <ol className="focuslist">{focus.top.map((l, i) => {
+            const dl = daysLeft(l.deadline);
+            return (
+              <li key={l.id}>
+                <span className="fl-n">{i + 1}</span>
+                <span className="fl-main"><Ref code={l.ref_code} /> <Link className="t" href={`/leads/${l.id}`}>{l.title}</Link>
+                  <span className="fl-sub">{[l.funder_buyer, l.country].filter(Boolean).join(' · ')}{l.next_step ? <> · <b>Next:</b> {l.next_step}</> : null}</span></span>
+                <span className="fl-meta">
+                  {l.approval_status === 'Pending' ? <span className="badge b-warn">Needs approval</span> : l.priority ? <span className={`badge ${l.priority === 'Apply' ? 'b-ok' : 'b-info'}`}>{l.priority}</span> : null}
+                  {l.fit_score != null ? <span className="badge b-neu">Fit {l.fit_score}</span> : null}
+                  <span className={dl !== null && dl <= 7 ? 'due urgent' : 'muted'}>{l.deadline ? `${fmtDate(l.deadline)}${dl !== null ? ` · ${dl} d` : ''}` : 'No deadline'}</span>
+                  <span className="muted">{memberName(l.assigned_to)}</span>
+                </span>
+              </li>
+            );
+          })}</ol>
+        ) : <Empty title="Nothing qualified waiting">New leads appear here once someone verifies them or they score 60 or more.</Empty>}
+        {focus.more ? <p className="muted fl-more">{focus.more} more qualified {focus.more === 1 ? 'lead is' : 'leads are'} waiting behind these. <Link href="/tracker?scope=all">See them on the board</Link>.</p> : null}
+      </section>
+
+      <section className="card" aria-labelledby="fu-h">
+        <header><div><h2 id="fu-h">Follow-ups this week</h2><p>Opportunities we are pursuing with a follow-up due in 7 days or overdue.</p></div><Link href="/leads?decision=Go">All Go</Link></header>
+        {(() => {
+          const fu = leads.filter(l => l.next_followup && (daysLeft(l.next_followup) ?? 99) <= 7 && !['Won', 'Lost', 'Dropped', 'Banked'].includes(l.stage)).sort((a, b) => String(a.next_followup).localeCompare(String(b.next_followup))).slice(0, 6);
+          return fu.length ? (
+            <ul className="feed">{fu.map(l => (
+              <li key={l.id} style={{ gridTemplateColumns: 'minmax(0,1fr) 140px auto' }}>
+                <span style={{ minWidth: 0 }}><Ref code={l.ref_code} /> <Link className="t" href={`/leads/${l.id}?tab=proposal`}>{l.title}</Link><div className="muted" style={{ fontSize: 12.5 }}>{[l.contact_name, l.contact_role].filter(Boolean).join(', ') || l.funder_buyer}</div></span>
+                <FollowUp date={l.next_followup} />
+                <DecisionPill d={l.decision} />
+              </li>
+            ))}</ul>
+          ) : <Empty title="No follow-ups due">Set a follow-up date on the Proposal tab of an opportunity.</Empty>;
+        })()}
+      </section>
+
+      <details className="card more-dash">
+        <summary><h2 className="inline-h">Full pipeline overview</h2> <span className="muted">counts, team workload, activity and charts</span></summary>
       <section className="kpis" aria-label="Pipeline summary">
         <Link className="kpi" href="/leads"><small>Active opportunities</small><b className="num">{d.kpi.active}</b><span className="sub">Open, not wrong, not No-go</span></Link>
         <Link className="kpi" href="/leads?type=tender,rfp&stage=Partnering,In+preparation"><small>Tenders / RFPs in preparation</small><b className="num">{d.kpi.tendersPrep}</b><span className="sub">Partnering or preparing</span></Link>
@@ -173,21 +219,7 @@ export default async function Dashboard() {
         </div>
       </div>
 
-      <section className="card" aria-labelledby="fu-h">
-        <header><div><h2 id="fu-h">Follow-ups this week</h2><p>Opportunities we are pursuing with a follow-up due in 7 days or overdue.</p></div><Link href="/leads?decision=Go">All Go</Link></header>
-        {(() => {
-          const fu = leads.filter(l => l.next_followup && (daysLeft(l.next_followup) ?? 99) <= 7 && !['Won', 'Lost', 'Dropped', 'Banked'].includes(l.stage)).sort((a, b) => String(a.next_followup).localeCompare(String(b.next_followup))).slice(0, 6);
-          return fu.length ? (
-            <ul className="feed">{fu.map(l => (
-              <li key={l.id} style={{ gridTemplateColumns: 'minmax(0,1fr) 140px auto' }}>
-                <span style={{ minWidth: 0 }}><Ref code={l.ref_code} /> <Link className="t" href={`/leads/${l.id}?tab=proposal`}>{l.title}</Link><div className="muted" style={{ fontSize: 12.5 }}>{[l.contact_name, l.contact_role].filter(Boolean).join(', ') || l.funder_buyer}</div></span>
-                <FollowUp date={l.next_followup} />
-                <DecisionPill d={l.decision} />
-              </li>
-            ))}</ul>
-          ) : <Empty title="No follow-ups due">Set a follow-up date on the Proposal tab of an opportunity.</Empty>;
-        })()}
-      </section>
+      </details>
     </>
   );
 }

@@ -125,6 +125,17 @@ To install it on a live CRM:
 
 New installs: run `schema.sql`, `update-2.sql`, `update-3.sql`, `update-4.sql`, `update-5.sql`, `update-6.sql`, then `update-7.sql`.
 
+## Update 8 (November 2026): focus on 10 qualified leads
+
+The dashboard, menu and board now show the short list a person can decide on, not the size of the whole pipeline.
+
+- **Dashboard → "Your top 10 to decide".** Open leads in the early stages (identified, screening, under consideration) that are not expired, not a published skip (priority Skip or Watch, or No-go), and are either verified by the team, added by hand, waiting for approval, or scored 60 or more by the crawler. Ranked: approvals first, then Apply/Consider, fit score, and a closing date within 3/7/14 days. The sentence above it says how many others are parked. Counts, workload, activity and charts moved into "Full pipeline overview" (collapsed).
+- **Quiet menu.** Numbers appear only where someone has to act: Lead Tracker (the focus count), My follow-ups (due today or overdue), Review queue (approvals waiting), Tasks (mine due today or overdue). Anything above 9 shows as "9+". Events, All opportunities and Crawler intake no longer show totals.
+- **Lead Tracker opens on "Focus: top 10 + in progress".** Leads being partnered, prepared, submitted or negotiated always show; early-stage leads show only if they are in the top 10. "All team leads", "Crawler, not yet verified" and "All leads" are one click away in the first filter.
+- Thresholds live in `lib/focus.ts` (`FOCUS_LIMIT = 10`, `FOCUS_MIN_FIT = 60`).
+
+No database change; just push.
+
 ## Update 7 (November 2026): product tour, smarter uploads, JSON lead files
 
 - **Product tour on first login.** After this release everyone sees a one-minute guided tour once (spotlight coach marks on the Lead Tracker, search, Quick Add, follow-ups, Events, People, Pre-Leads and the account menu). Finishing or skipping it is saved per person in `user_onboarding`, so it does not come back on the next login or another device. **Account menu → Take the product tour again** replays it.

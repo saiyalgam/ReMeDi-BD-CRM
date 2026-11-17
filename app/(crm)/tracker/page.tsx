@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { focusLeads, inProgress } from '@/lib/focus';
 import { AutoSubmitSelect } from '@/components/AutoSubmit';
 import { TrackerBoard, type BoardCard } from '@/components/TrackerBoard';
 import { Notes } from '@/components/ui';
@@ -21,11 +22,14 @@ export default async function TrackerPage({ searchParams }: { searchParams: SP }
   const me = session!.user.id;
   const f = {
     q: one(sp.q).toLowerCase().slice(0, 100), cat: one(sp.cat), owner: one(sp.owner), geo: one(sp.geo), size: one(sp.size), prio: one(sp.prio),
-    st: one(sp.st), scope: one(sp.scope) || 'team', closing: one(sp.closing) === '1', view: one(sp.view) === 'table' ? 'table' : 'kanban'
+    st: one(sp.st), scope: one(sp.scope) || 'focus', closing: one(sp.closing) === '1', view: one(sp.view) === 'table' ? 'table' : 'kanban'
   };
 
   // Team leads: verified by a person or added by hand. Crawler leads nobody has checked yet stay in the review queue.
-  const inScope = (l: Lead) => f.scope === 'all' ? l.verification !== 'Incorrect' && l.verification !== 'Duplicate'
+  // Focus (default): leads already being worked on, plus the top 10 qualified leads to decide on.
+  const focusIds = new Set(focusLeads(leads).top.map(l => l.id));
+  const inScope = (l: Lead) => f.scope === 'focus' ? inProgress(l) || focusIds.has(l.id) || ['Won', 'Lost', 'Dropped', 'Banked'].includes(l.stage) && (l.verification === 'Correct' || l.origin === 'manual')
+    : f.scope === 'all' ? l.verification !== 'Incorrect' && l.verification !== 'Duplicate'
     : f.scope === 'crawler' ? l.verification === 'Unverified' && l.origin !== 'manual'
       : (l.verification === 'Correct' || l.origin === 'manual');
   const base = leads.filter(inScope);
@@ -113,7 +117,7 @@ export default async function TrackerPage({ searchParams }: { searchParams: SP }
         </div>
         <div className="fb-row">
           <AutoSubmitSelect name="scope" defaultValue={f.scope} label="Which leads">
-            <option value="team">Team leads</option><option value="crawler">Crawler, not yet verified</option><option value="all">All leads</option>
+            <option value="focus">Focus: top 10 + in progress</option><option value="team">All team leads</option><option value="crawler">Crawler, not yet verified</option><option value="all">All leads</option>
           </AutoSubmitSelect>
           <AutoSubmitSelect name="cat" defaultValue={f.cat} label="Category"><option value="">Category: All</option>{TRACKER_CATEGORIES.map(c => <option key={c}>{c}</option>)}</AutoSubmitSelect>
           <AutoSubmitSelect name="owner" defaultValue={f.owner} label="Owner"><option value="">Owner: All</option><option value="me">Me</option><option value="none">Unassigned</option>{members.map(m => <option key={m.id} value={m.id}>{m.full_name || m.email}</option>)}</AutoSubmitSelect>

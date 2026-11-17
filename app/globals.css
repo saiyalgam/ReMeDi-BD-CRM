@@ -910,3 +910,20 @@ details.card[open] > summary::before { content: '− '; }
 .tour-dots i.done { background: #A6C7FF; } .tour-dots i.on { background: var(--brand, #0E4C92); width: 18px; border-radius: 4px; }
 .tour-actions { display: flex; justify-content: space-between; gap: 8px; margin-top: 4px; }
 @media (prefers-reduced-motion: reduce) { .tour-spot { transition: none; } }
+
+/* ---------- Update 8: focus list (10 qualified leads, not 100) ---------- */
+.focuslist { list-style: none; margin: 0; padding: 0; display: grid; }
+.focuslist li { display: grid; grid-template-columns: 32px minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 12px 4px; border-top: 1px solid var(--line, #E2E8F0); }
+.focuslist li:first-child { border-top: 0; }
+.fl-n { width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; background: var(--accent-soft, #EEF4FF); color: var(--brand, #0E4C92); font: 700 13px/1 var(--f-body); }
+.fl-main { min-width: 0; display: grid; gap: 3px; }
+.fl-main .t { font-weight: 600; }
+.fl-sub { font-size: 13px; color: var(--muted, #667085); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fl-meta { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: flex-end; font-size: 13px; }
+.fl-more { margin: 10px 0 0; font-size: 13px; }
+.more-dash > summary { cursor: pointer; display: flex; gap: 10px; align-items: baseline; list-style: none; }
+.more-dash > summary::-webkit-details-marker { display: none; }
+.more-dash > summary::before { content: '▸'; color: var(--muted); }
+.more-dash[open] > summary::before { content: '▾'; }
+.more-dash[open] > summary { margin-bottom: 16px; }
+@media (max-width: 900px) { .focuslist li { grid-template-columns: 28px minmax(0, 1fr); } .fl-meta { grid-column: 2; justify-content: flex-start; } }

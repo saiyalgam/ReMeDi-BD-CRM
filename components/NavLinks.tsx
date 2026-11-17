@@ -27,7 +27,7 @@ export function NavLinks({ title, items }: { title: string; items: NavItem[] }) 
         <Link key={it.href} href={it.href} className="navlink" aria-current={isActive(it) ? 'page' : undefined} data-tour={it.tour}
           onClick={it.isNew && it.feature ? () => { setOpened(o => [...o, it.feature!]); void featureSeenAction(it.feature!); } : undefined}>
           <span className="lbl">{it.icon}{it.color ? <i className="dot" style={{ background: it.color }} aria-hidden="true" /> : null}{it.label}{it.isNew && !opened.includes(it.feature || '') ? <span className="newpill">New</span> : null}</span>
-          {it.count != null ? <span className={`count${it.alert ? ' alert' : ''}`}>{it.count}{it.alert ? ' due' : ''}</span> : null}
+          {it.count != null ? <span className={`count${it.alert ? ' alert' : ''}`}>{it.count > 9 ? '9+' : it.count}{it.alert && it.href === '/followups' ? ' due' : ''}</span> : null}
         </Link>
       ))}
     </nav>

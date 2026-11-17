@@ -233,3 +233,8 @@ Confirm scope with the user before starting any of these:
 - New: `supabase/update-7.sql` (`user_onboarding`, own-row RLS), `lib/onboarding.ts` (`TOUR_VERSION`, `NEW_FEATURES`), `app/onboarding-actions.ts`, `components/ProductTour.tsx` (steps point at `data-tour="…"` elements), `app/json-import-actions.ts`, `components/JsonImport.tsx`.
 - Changed: `app/(crm)/layout.tsx` (tour steps, data-tour anchors, "New" badges, replay button, JSON link in Quick Add), `components/NavLinks.tsx`, `components/OutreachUpload.tsx` (header-row and list-type detection, normalised header matching, unmapped columns kept in the notes field, link to existing or new event), `app/outreach-actions.ts` (`new_event_name`), `lib/outreach.ts` (`eventId` in the result), `app/(crm)/events/page.tsx`, `app/(crm)/people/page.tsx`, `app/(crm)/settings/import/page.tsx`, `lib/demo.ts`, `app/globals.css` (fixed `.tbl td.clip`, which stacked a row's cells).
 - New release worth a tour? Change `TOUR_VERSION` and the steps in `tourSteps()`; add page keys to `NEW_FEATURES` for badges.
+
+## Update 8 notes (6 Nov 2026): focus list
+
+- New: `lib/focus.ts` (`qualified`, `focusRank`, `focusLeads`, `inProgress`). Changed: `app/(crm)/page.tsx` (top-10 card, follow-ups, rest collapsed), `app/(crm)/layout.tsx` (menu counts only for actions, 9+ cap), `components/NavLinks.tsx`, `app/(crm)/tracker/page.tsx` (default scope `focus`), `app/globals.css`.
+- Keep the dashboard first screen short. Add new totals inside "Full pipeline overview", not above the focus card.
